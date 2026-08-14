@@ -1,10 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { exportToCsv } from '../utils/exportCsv';
-import { BarChart2, Download, Users, Truck, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
+import { BarChart2, Download, Users, Truck, CheckCircle, AlertTriangle, XCircle, PieChart as PieChartIcon, X, Clock } from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { Assignment, Incident } from '../types';
 
 export const ReportsPage: React.FC = () => {
   const { state } = useAppContext();
+  const [activeDetail, setActiveDetail] = useState<'asignadas' | 'novedades' | null>(null);
 
   // Derived metrics based on active context
   const metrics = useMemo(() => {
@@ -23,6 +26,29 @@ export const ReportsPage: React.FC = () => {
     const operationalVehicles = relevantVehicles.filter(v => v.status === 'Operativo').length;
     const inoperableVehicles = relevantVehicles.filter(v => v.status === 'Inoperativo').length;
 
+    // Assignment Chart Data
+    const statusCounts: Record<string, number> = {
+      'Salida de Base': 0,
+      'Inicio de Ruta': 0,
+      'Fin de Ruta': 0,
+      'Relleno': 0,
+      'Base': 0,
+      'Pendiente': 0
+    };
+    relevantAssignments.forEach(a => {
+      statusCounts[a.status] = (statusCounts[a.status] || 0) + 1;
+    });
+
+    const assignmentData = Object.entries(statusCounts)
+      .filter(([_, count]) => count > 0)
+      .map(([name, value]) => ({ name, value }));
+
+    // Vehicle Chart Data
+    const vehicleData = [
+      { name: 'Operativos', value: operationalVehicles },
+      { name: 'Inoperativos', value: inoperableVehicles }
+    ].filter(d => d.value > 0);
+
     return {
       totalAssignments: relevantAssignments.length,
       completed,
@@ -31,7 +57,9 @@ export const ReportsPage: React.FC = () => {
       relevantAssignments,
       totalVehicles,
       operationalVehicles,
-      inoperableVehicles
+      inoperableVehicles,
+      assignmentData,
+      vehicleData
     };
   }, [state.assignments, state.vehicles, state.activeWorkGroupId]);
 
@@ -95,6 +123,7 @@ export const ReportsPage: React.FC = () => {
           value={metrics.totalAssignments.toString()} 
           icon={<BarChart2 className="h-6 w-6 text-indigo-600" />}
           bg="bg-indigo-50"
+          onClick={() => setActiveDetail('asignadas')}
         />
         <MetricCard 
           title="Rutas Completadas" 
@@ -113,6 +142,7 @@ export const ReportsPage: React.FC = () => {
           value={metrics.totalIncidents.toString()} 
           icon={<AlertTriangle className="h-6 w-6 text-amber-600" />}
           bg="bg-amber-50"
+          onClick={() => setActiveDetail('novedades')}
         />
       </div>
 
@@ -135,6 +165,88 @@ export const ReportsPage: React.FC = () => {
           icon={<XCircle className="h-6 w-6 text-red-600" />}
           bg="bg-red-50"
         />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+          <h3 className="font-bold flex items-center gap-2 mb-6">
+            <PieChartIcon className="h-5 w-5 text-indigo-500" />
+            Estado de Asignaciones
+          </h3>
+          <div className="h-64">
+            {metrics.assignmentData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={metrics.assignmentData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                  >
+                    {metrics.assignmentData.map((entry, index) => {
+                      const colors: Record<string, string> = {
+                        'Salida de Base': '#f59e0b',
+                        'Inicio de Ruta': '#3b82f6',
+                        'Fin de Ruta': '#10b981',
+                        'Relleno': '#8b5cf6',
+                        'Base': '#64748b',
+                        'Pendiente': '#cbd5e1'
+                      };
+                      return <Cell key={`cell-${index}`} fill={colors[entry.name] || '#94a3b8'} />;
+                    })}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-full text-slate-400 text-sm">
+                No hay asignaciones registradas
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+          <h3 className="font-bold flex items-center gap-2 mb-6">
+            <PieChartIcon className="h-5 w-5 text-emerald-500" />
+            Disponibilidad de Flota
+          </h3>
+          <div className="h-64">
+            {metrics.vehicleData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={metrics.vehicleData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                  >
+                    {metrics.vehicleData.map((entry, index) => {
+                      const colors: Record<string, string> = {
+                        'Operativos': '#10b981',
+                        'Inoperativos': '#ef4444'
+                      };
+                      return <Cell key={`cell-${index}`} fill={colors[entry.name] || '#94a3b8'} />;
+                    })}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-full text-slate-400 text-sm">
+                No hay vehículos registrados
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -173,18 +285,102 @@ export const ReportsPage: React.FC = () => {
         </div>
       </div>
       
+      {activeDetail === 'asignadas' && (
+        <DetailModal 
+          title="Detalle de Asignaciones" 
+          onClose={() => setActiveDetail(null)}
+        >
+          <div className="space-y-3">
+            {metrics.relevantAssignments.map((assignment: Assignment) => {
+              const route = state.routes.find(r => r.id === assignment.routeId);
+              const vehicle = state.vehicles.find(v => v.id === assignment.vehicleId);
+              return (
+                <div key={assignment.id} className="p-3 border border-slate-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-50">
+                  <div>
+                    <h4 className="font-bold text-slate-800 text-sm">{route?.name || 'Ruta Desconocida'}</h4>
+                    <div className="text-xs text-slate-500 flex items-center gap-3 mt-1">
+                      <span className="flex items-center"><Clock className="h-3 w-3 mr-1" />{new Date(assignment.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
+                      <span className="flex items-center"><Truck className="h-3 w-3 mr-1" />Móvil {vehicle?.internalNumber || 'N/A'}</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-1 bg-indigo-100 text-indigo-700 rounded-full w-fit uppercase tracking-wider">
+                    {assignment.status}
+                  </span>
+                </div>
+              );
+            })}
+            {metrics.relevantAssignments.length === 0 && (
+              <p className="text-sm text-slate-500 text-center py-4">No hay asignaciones registradas.</p>
+            )}
+          </div>
+        </DetailModal>
+      )}
+
+      {activeDetail === 'novedades' && (
+        <DetailModal 
+          title="Detalle de Novedades" 
+          onClose={() => setActiveDetail(null)}
+        >
+          <div className="space-y-3">
+            {metrics.relevantAssignments.flatMap(a => 
+              a.incidents.map((inc: Incident) => {
+                const route = state.routes.find(r => r.id === a.routeId);
+                const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
+                return (
+                  <div key={inc.id} className="p-3 border border-amber-200 bg-amber-50/50 rounded-lg flex flex-col gap-1">
+                    <div className="flex justify-between items-start">
+                      <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded uppercase">{inc.type}</span>
+                      <span className="text-[10px] text-slate-500 flex items-center"><Clock className="h-3 w-3 mr-1" /> {inc.timestamp}</span>
+                    </div>
+                    <p className="text-sm text-slate-800 mt-1">{inc.description}</p>
+                    <p className="text-xs text-slate-500 mt-2 font-medium">
+                      {route?.name || 'Ruta N/A'} • Móvil {vehicle?.internalNumber || 'N/A'}
+                    </p>
+                  </div>
+                );
+              })
+            )}
+            {metrics.totalIncidents === 0 && (
+              <p className="text-sm text-slate-500 text-center py-4">No se han reportado novedades.</p>
+            )}
+          </div>
+        </DetailModal>
+      )}
+
     </div>
   );
 };
 
-const MetricCard = ({ title, value, icon, bg }: { title: string, value: string, icon: React.ReactNode, bg: string }) => (
-  <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col justify-between h-32 shadow-sm">
-    <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">{title}</span>
-    <div className="flex items-end justify-between">
-      <span className="text-3xl font-black text-slate-800">{value}</span>
-      <div className={`p-2 rounded-lg ${bg}`}>
-        {icon}
+const DetailModal = ({ title, children, onClose }: { title: string, children: React.ReactNode, onClose: () => void }) => (
+  <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-50">
+    <div className="bg-white rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col shadow-xl">
+      <div className="flex justify-between items-center p-4 border-b border-slate-100">
+        <h3 className="font-bold text-lg text-slate-800">{title}</h3>
+        <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors">
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="p-4 overflow-y-auto">
+        {children}
       </div>
     </div>
   </div>
 );
+
+const MetricCard = ({ title, value, icon, bg, onClick }: { title: string, value: string, icon: React.ReactNode, bg: string, onClick?: () => void }) => {
+  const Component = onClick ? 'button' : 'div';
+  return (
+    <Component 
+      onClick={onClick}
+      className={`bg-white p-4 rounded-xl border border-slate-200 flex flex-col justify-between h-32 shadow-sm text-left ${onClick ? 'cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all' : ''}`}
+    >
+      <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">{title}</span>
+      <div className="flex items-end justify-between w-full">
+        <span className="text-3xl font-black text-slate-800">{value}</span>
+        <div className={`p-2 rounded-lg ${bg}`}>
+          {icon}
+        </div>
+      </div>
+    </Component>
+  );
+};

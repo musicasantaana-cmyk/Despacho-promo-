@@ -1,7 +1,23 @@
-import React, { useState } from 'react';
-import { Truck, Map, Activity, BarChart2, Settings, Cloud, X, Menu } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Truck, Map, Activity, BarChart2, Settings, Cloud, X, Menu, Clock } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { exportToCsv } from '../utils/exportCsv';
+
+const DigitalClock = () => {
+  const [time, setTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="hidden md:flex items-center text-slate-700 font-mono text-sm bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+      <Clock className="h-4 w-4 mr-2 text-indigo-500" />
+      {time.toLocaleTimeString()}
+    </div>
+  );
+};
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -108,6 +124,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
             </div>
           </div>
           <div className="flex items-center space-x-4 text-sm text-slate-500">
+            <DigitalClock />
             {state.workGroups.length > 0 && (
               <div className="hidden sm:flex items-center bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider mr-2">Grupo:</span>

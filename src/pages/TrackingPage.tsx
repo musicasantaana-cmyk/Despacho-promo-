@@ -113,11 +113,14 @@ export const TrackingPage: React.FC = () => {
                   {getStatusBadge(assignment.status)}
                 </div>
                 <div className="text-xs text-slate-500 flex flex-col space-y-1">
-                  <span>📅 {assignment.date}</span>
-                  <span>🚛 {vehicle?.plate || 'Vehículo N/A'}</span>
+                  <span className="flex items-center">
+                    <Clock className="h-3 w-3 mr-1 text-slate-400" /> 
+                    {new Date(assignment.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                  </span>
+                  <span className="flex items-center"><Truck className="h-3 w-3 mr-1 text-slate-400" /> Móvil {vehicle?.internalNumber || 'N/A'}</span>
                   {assignment.incidents.length > 0 && (
                     <span className="text-amber-600 font-medium flex items-center mt-1">
-                      <AlertTriangle className="h-3 w-3 mr-1" /> {assignment.incidents.length} novedades
+                      <AlertTriangle className="h-3 w-3 mr-1" /> {assignment.incidents.length} novedad(es) registrada(s)
                     </span>
                   )}
                 </div>
@@ -146,7 +149,7 @@ export const TrackingPage: React.FC = () => {
                       {state.routes.find(r => r.id === selectedAssignment.routeId)?.code ? `[${state.routes.find(r => r.id === selectedAssignment.routeId)?.code}] ` : ''}
                       {state.routes.find(r => r.id === selectedAssignment.routeId)?.name || 'Ruta Desconocida'}
                     </h2>
-                    <p className="text-xs md:text-sm text-slate-500 mt-1">ID: {selectedAssignment.id} • {selectedAssignment.date}</p>
+                    <p className="text-xs md:text-sm text-slate-500 mt-1">ID: {selectedAssignment.id} • {new Date(selectedAssignment.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</p>
                   </div>
                 </div>
                 <div className="flex space-x-2">

@@ -10,7 +10,12 @@ export const AssignmentPage: React.FC = () => {
   const [routeId, setRouteId] = useState('');
   const [vehicleId, setVehicleId] = useState('');
   const [employeeIds, setEmployeeIds] = useState<string[]>([]);
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(() => {
+    const now = new Date();
+    // Format to YYYY-MM-DDTHH:mm for datetime-local input
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16);
+  });
   
   const [createdAssignment, setCreatedAssignment] = useState<Omit<Assignment, 'incidents' | 'status'> | null>(null);
 
@@ -74,10 +79,10 @@ export const AssignmentPage: React.FC = () => {
 
         <form onSubmit={handleCreate} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Fecha de Operación</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Fecha y Hora de Operación</label>
             <div className="relative">
               <Calendar className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-              <input required type="date" value={date} onChange={e => setDate(e.target.value)} className="pl-9 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+              <input required type="datetime-local" value={date} onChange={e => setDate(e.target.value)} className="pl-9 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
             </div>
           </div>
 
