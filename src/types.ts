@@ -83,3 +83,13 @@ export interface AppState {
   lastBackupDate: string | null;
 }
 
+export interface SyncStatus {
+  isOnline: boolean;
+  isSyncing: boolean;
+  lastSyncTime: string | null;
+  latencyInterval: number; // in seconds
+  serverVersion: number;
+  deviceId: string;
+  syncProtocol: string;
+}
+

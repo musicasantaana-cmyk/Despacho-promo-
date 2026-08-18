@@ -1,8 +1,11 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { AppState, Employee, EmployeeRole, Vehicle, RouteDef, Assignment, Incident, WorkGroup, CrewTemplate } from '../types';
+import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
+import { AppState, Employee, EmployeeRole, Vehicle, RouteDef, Assignment, Incident, WorkGroup, CrewTemplate, SyncStatus } from '../types';
 
 interface AppContextProps {
   state: AppState;
+  syncStatus: SyncStatus;
+  syncNow: () => Promise<void>;
+  setLatencyInterval: (seconds: number) => void;
   addWorkGroup: (name: string) => void;
   deleteWorkGroup: (id: string) => void;
   setActiveWorkGroup: (id: string) => void;
@@ -43,6 +46,15 @@ const AppContext = createContext<AppContextProps | undefined>(undefined);
 
 const generateId = () => Math.random().toString(36).substring(2, 9);
 
+const getDeviceId = () => {
+  let id = localStorage.getItem('PROMODESPACHO_deviceId');
+  if (!id) {
+    id = 'DEV-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+    localStorage.setItem('PROMODESPACHO_deviceId', id);
+  }
+  return id;
+};
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<AppState>(() => {
     const saved = localStorage.getItem('PROMODESPACHO_data');
@@ -66,20 +78,195 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return defaultState;
   });
 
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    isSyncing: false,
+    lastSyncTime: null,
+    latencyInterval: 15, // 15 seconds heartbeat default
+    serverVersion: 1,
+    deviceId: getDeviceId(),
+    syncProtocol: 'HTTP-Gateway-Heartbeat-15s / BroadcastChannel',
+  });
+
+  const localVersionRef = useRef<number>(1);
+  const isPushingRef = useRef<boolean>(false);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+
+  // BroadcastChannel for instant local inter-tab synchronization
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const channel = new BroadcastChannel('PROMODESPACHO_SYNC_BUS');
+        broadcastChannelRef.current = channel;
+
+        channel.onmessage = (event) => {
+          if (event.data && event.data.type === 'STATE_UPDATE' && event.data.deviceId !== getDeviceId()) {
+            console.log('[Sync Bus] Instant update from sister tab');
+            setState(event.data.state);
+            localVersionRef.current = event.data.version || (localVersionRef.current + 1);
+            setSyncStatus(prev => ({
+              ...prev,
+              lastSyncTime: new Date().toLocaleTimeString(),
+              serverVersion: localVersionRef.current,
+            }));
+          }
+        };
+
+        return () => {
+          channel.close();
+        };
+      }
+    } catch (err) {
+      console.warn('[Sync Bus] BroadcastChannel warning:', err);
+    }
+  }, []);
+
+  // Online / Offline listener
+  useEffect(() => {
+    const handleOnline = () => setSyncStatus(prev => ({ ...prev, isOnline: true }));
+    const handleOffline = () => setSyncStatus(prev => ({ ...prev, isOnline: false }));
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Helper to push state to Server Gateway
+  const pushStateToServer = useCallback(async (stateToPush: AppState) => {
+    if (isPushingRef.current) return;
+    try {
+      isPushingRef.current = true;
+      setSyncStatus(prev => ({ ...prev, isSyncing: true }));
+
+      const response = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: getDeviceId(),
+          clientVersion: localVersionRef.current,
+          state: stateToPush,
+          timestamp: Date.now(),
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        localVersionRef.current = data.version;
+        setSyncStatus(prev => ({
+          ...prev,
+          isSyncing: false,
+          isOnline: true,
+          lastSyncTime: new Date().toLocaleTimeString(),
+          serverVersion: data.version,
+        }));
+
+        if (broadcastChannelRef.current) {
+          broadcastChannelRef.current.postMessage({
+            type: 'STATE_UPDATE',
+            deviceId: getDeviceId(),
+            version: data.version,
+            state: stateToPush,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[Sync Gateway] Push failed (working offline):', err);
+      setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+    } finally {
+      isPushingRef.current = false;
+    }
+  }, []);
+
+  // Helper to pull from server
+  const fetchServerState = useCallback(async () => {
+    try {
+      setSyncStatus(prev => ({ ...prev, isSyncing: true }));
+      const res = await fetch('/api/sync');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.state) {
+          setState(data.state);
+          localVersionRef.current = data.version;
+          setSyncStatus(prev => ({
+            ...prev,
+            isSyncing: false,
+            isOnline: true,
+            lastSyncTime: new Date().toLocaleTimeString(),
+            serverVersion: data.version,
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn('[Sync Gateway] Fetch failed:', err);
+      setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+    }
+  }, []);
+
+  // 15-second Heartbeat Polling Protocol (Multi-device synchronizer)
+  useEffect(() => {
+    const checkServerHeartbeat = async () => {
+      if (isPushingRef.current) return;
+      try {
+        const statusRes = await fetch('/api/sync/status');
+        if (statusRes.ok) {
+          const status = await statusRes.json();
+          setSyncStatus(prev => ({ ...prev, isOnline: true }));
+          if (status.version > localVersionRef.current) {
+            console.log(`[Sync Gateway] Server newer version (${status.version} > ${localVersionRef.current}). Pulling...`);
+            const syncRes = await fetch('/api/sync');
+            if (syncRes.ok) {
+              const syncData = await syncRes.json();
+              if (syncData.state) {
+                setState(syncData.state);
+                localVersionRef.current = syncData.version;
+                setSyncStatus(prev => ({
+                  ...prev,
+                  lastSyncTime: new Date().toLocaleTimeString(),
+                  serverVersion: syncData.version,
+                }));
+              }
+            }
+          }
+        }
+      } catch (err) {
+        setSyncStatus(prev => ({ ...prev, isOnline: false }));
+      }
+    };
+
+    // Initial check on mount
+    checkServerHeartbeat();
+
+    // 15s timer
+    const intervalMs = (syncStatus.latencyInterval || 15) * 1000;
+    const heartbeatTimer = setInterval(checkServerHeartbeat, intervalMs);
+
+    return () => clearInterval(heartbeatTimer);
+  }, [syncStatus.latencyInterval]);
+
+  // Persist locally and trigger push debounce
   useEffect(() => {
     localStorage.setItem('PROMODESPACHO_data', JSON.stringify(state));
-    // Simulate automatic background backup if email is set
-    if (state.backupEmail) {
-      const interval = setInterval(() => {
-        setState((prev) => ({
-          ...prev,
-          lastBackupDate: new Date().toISOString(),
-        }));
-        console.log(`[Backup System] Copia de seguridad sincronizada con: ${state.backupEmail}`);
-      }, 60000); // simulate sync every minute for demo purposes
-      return () => clearInterval(interval);
-    }
-  }, [state, state.backupEmail]);
+    const timer = setTimeout(() => {
+      pushStateToServer(state);
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [state, pushStateToServer]);
+
+  // Set Latency Interval
+  const setLatencyInterval = (seconds: number) => {
+    const validSec = Math.max(5, Math.min(120, seconds));
+    setSyncStatus(prev => ({ ...prev, latencyInterval: validSec }));
+  };
+
+  const syncNow = async () => {
+    await pushStateToServer(state);
+    await fetchServerState();
+  };
 
   const triggerManualBackup = () => {
     if (state.backupEmail) {
@@ -88,6 +275,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         lastBackupDate: new Date().toISOString(),
       }));
     }
+    syncNow();
   };
 
   const addWorkGroup = (name: string) => {
@@ -288,6 +476,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     <AppContext.Provider
       value={{
         state,
+        syncStatus,
+        syncNow,
+        setLatencyInterval,
         addWorkGroup,
         deleteWorkGroup,
         setActiveWorkGroup,
