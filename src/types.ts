@@ -6,11 +6,15 @@ export type IncidentType = 'Retraso' | 'Mecánico' | 'Personal' | 'Clima' | 'Otr
 export interface WorkGroup {
   id: string;
   name: string;
+  firstName?: string;
+  lastName?: string;
 }
 
 export interface Employee {
   id: string;
   name: string;
+  firstName?: string;
+  lastName?: string;
   role: EmployeeRole;
   phone: string;
   workGroup: string; // legacy string
@@ -29,6 +33,8 @@ export interface Vehicle {
 export interface RouteDef {
   id: string;
   name: string;
+  firstName?: string;
+  lastName?: string;
   code: string;
   operatingDays: number[];
   origin: string;
@@ -55,6 +61,16 @@ export interface Assignment {
   workGroupId?: string;
 }
 
+export interface CrewTemplate {
+  id: string;
+  name: string;
+  firstName?: string;
+  lastName?: string;
+  driverId: string;
+  assistantIds: string[];
+  workGroupId?: string;
+}
+
 export interface AppState {
   workGroups: WorkGroup[];
   activeWorkGroupId: string | null;
@@ -62,6 +78,7 @@ export interface AppState {
   vehicles: Vehicle[];
   routes: RouteDef[];
   assignments: Assignment[];
+  crews: CrewTemplate[];
   backupEmail: string | null;
   lastBackupDate: string | null;
 }

@@ -1,7 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { Users, Truck, MapPin, Plus, Trash2, X, Settings, Download, UploadCloud, Shield, Phone, MessageCircle, User, UserCog, Filter, HardHat, Edit2 } from 'lucide-react';
-import { Employee, Vehicle, RouteDef } from '../types';
+import { Employee, EmployeeRole, Vehicle, RouteDef } from '../types';
 import { downloadCsvTemplate, parseCsvFile } from '../utils/csvHelper';
 import { exportToCsv } from '../utils/exportCsv';
 
@@ -91,7 +91,7 @@ export const AdminPage: React.FC = () => {
         
         <button 
           onClick={() => setIsBulkModalOpen(true)}
-          className="p-2 ml-2 text-slate-500 hover:text-indigo-600 hover:bg-slate-200 bg-white rounded-lg transition-colors border border-slate-200 shadow-sm"
+          className="p-2 ml-2 text-slate-500 hover:text-emerald-500 hover:bg-slate-200 bg-white rounded-lg transition-colors border border-slate-200 shadow-sm"
           title="Importar/Exportar Datos"
         >
           <Settings className="h-5 w-5" />
@@ -133,9 +133,9 @@ const GeneralTab = () => {
           value={newGroup}
           onChange={e => setNewGroup(e.target.value)}
           placeholder="Nombre del nuevo grupo operativo..."
-          className="flex-1 border border-slate-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+          className="flex-1 border border-slate-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
         />
-        <button type="submit" className="bg-indigo-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-indigo-700 flex items-center">
+        <button type="submit" className="bg-emerald-500 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-emerald-600 flex items-center">
           <Plus className="h-4 w-4 mr-2" /> Crear Grupo
         </button>
       </form>
@@ -144,7 +144,7 @@ const GeneralTab = () => {
         {state.workGroups.map(wg => (
           <div key={wg.id} className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-xl hover:border-slate-300 transition-colors">
             <div className="flex items-center gap-3">
-              <div className="h-8 w-8 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center font-bold">
+              <div className="h-8 w-8 bg-amber-100 text-emerald-500 rounded-lg flex items-center justify-center font-bold">
                 {wg.name.charAt(0).toUpperCase()}
               </div>
               <span className="font-medium text-slate-800">{wg.name}</span>
@@ -165,31 +165,29 @@ const GeneralTab = () => {
 };
 
 const BulkActionModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) => {
-  const { state, addEmployee, addVehicle } = useAppContext();
+  const { state, importEmployeesBulk, addVehicle } = useAppContext();
   const [bulkType, setBulkType] = useState<'employees' | 'vehicles'>('employees');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
-    if (!state.activeWorkGroupId) {
-      alert("Atención: Debe seleccionar un Grupo de Trabajo activo en la barra superior antes de importar registros.");
-      return;
-    }
 
     try {
       const data = await parseCsvFile(file);
+      if (data.length === 0) {
+        alert("El archivo no contiene filas con datos.");
+        return;
+      }
+
       if (bulkType === 'employees') {
-        data.forEach(row => {
-          addEmployee({
-            name: `${row.nombre || ''} ${row.apellido || ''}`.trim() || 'Sin Nombre',
-            role: (row.rol as any) || 'Conductor',
-            phone: row.telefono || '',
-            workGroup: '',
-          });
-        });
+        importEmployeesBulk(data);
+        alert(`Se importaron ${data.length} registros de personal exitosamente. Los roles y grupos fueron vinculados de inmediato.`);
       } else {
+        if (!state.activeWorkGroupId) {
+          alert("Atención: Debe seleccionar un Grupo de Trabajo activo en la barra superior antes de importar vehículos.");
+          return;
+        }
         data.forEach(row => {
           addVehicle({
             plate: row.placa || 'N/A',
@@ -198,19 +196,28 @@ const BulkActionModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => 
             status: 'Operativo'
           });
         });
+        alert(`Se importaron ${data.length} vehículos exitosamente.`);
       }
-      alert(`Se importaron ${data.length} registros exitosamente al grupo actual.`);
       onClose();
     } catch (err) {
       alert("Error leyendo el archivo. Asegúrese de usar la plantilla correcta (.csv o .xlsx).");
+    } finally {
+      if (fileRef.current) fileRef.current.value = '';
     }
   };
 
   const handleExport = () => {
     if (bulkType === 'employees') {
-      const data = state.employees
-        .filter(e => e.workGroupId === state.activeWorkGroupId)
-        .map(e => ({ Nombre: e.name, Rol: e.role, Telefono: e.phone }));
+      const filtered = state.activeWorkGroupId 
+        ? state.employees.filter(e => e.workGroupId === state.activeWorkGroupId)
+        : state.employees;
+      const data = filtered.map(e => ({ 
+        APELLIDO: e.lastName || '', 
+        NOMBRE: e.firstName || e.name, 
+        ROLL: (e.role || 'Conductor').toUpperCase(), 
+        TELEFONO: e.phone || '',
+        GRUPO: state.workGroups.find(wg => wg.id === e.workGroupId)?.name || e.workGroup || '' 
+      }));
       exportToCsv(`personal_exportado.csv`, data);
     } else {
       const data = state.vehicles
@@ -239,20 +246,32 @@ const BulkActionModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => 
           </button>
         </div>
 
-        <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-xl">
-          <h4 className="text-sm font-bold text-blue-800 mb-1">Importante</h4>
-          <p className="text-xs text-blue-600 leading-relaxed">
-            Las importaciones masivas se asignarán automáticamente al grupo de trabajo actualmente seleccionado en la barra superior: 
-            <strong className="block mt-1">{state.workGroups.find(g => g.id === state.activeWorkGroupId)?.name || 'Ningún grupo seleccionado'}</strong>
-          </p>
-        </div>
+        {bulkType === 'employees' ? (
+          <div className="bg-emerald-50/70 border border-emerald-200 p-4 rounded-xl">
+            <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-1">Formato de Plantilla de Personal</h4>
+            <p className="text-xs text-emerald-700 leading-relaxed mb-2">
+              Columnas reconocidas: <strong>APELLIDO | NOMBRE | ROLL | TELEFONO | GRUPO</strong>
+            </p>
+            <p className="text-[11px] text-emerald-600">
+              * El sistema vincula automáticamente el rol (Conductor, Ayudante, Coordinador) y asocia o crea el grupo de trabajo (ej. <strong>R1</strong>) correspondiente.
+            </p>
+          </div>
+        ) : (
+          <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-xl">
+            <h4 className="text-sm font-bold text-blue-800 mb-1">Importante</h4>
+            <p className="text-xs text-blue-600 leading-relaxed">
+              Las importaciones de vehículos se asignarán al grupo activo: 
+              <strong className="block mt-1">{state.workGroups.find(g => g.id === state.activeWorkGroupId)?.name || 'Ningún grupo seleccionado'}</strong>
+            </p>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <button 
             onClick={() => downloadCsvTemplate(bulkType)}
-            className="flex flex-col items-center justify-center p-4 border border-slate-200 rounded-xl hover:border-indigo-300 hover:bg-indigo-50 transition-colors group"
+            className="flex flex-col items-center justify-center p-4 border border-slate-200 rounded-xl hover:border-emerald-300 hover:bg-emerald-50 transition-colors group"
           >
-            <Download className="h-6 w-6 text-slate-400 group-hover:text-indigo-500 mb-2" />
+            <Download className="h-6 w-6 text-slate-400 group-hover:text-emerald-500 mb-2" />
             <span className="text-sm font-medium text-slate-700">1. Bajar Plantilla</span>
           </button>
           <button 
@@ -270,7 +289,7 @@ const BulkActionModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => 
             onClick={handleExport}
             className="w-full flex items-center justify-center bg-slate-50 border border-slate-200 text-slate-700 rounded-lg py-2.5 text-sm font-medium hover:bg-slate-100 transition-colors"
           >
-            Exportar datos actuales del grupo
+            Exportar datos actuales
           </button>
         </div>
       </div>
@@ -279,22 +298,26 @@ const BulkActionModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => 
 };
 
 const EmployeesTab = () => {
-  const { state, addEmployee, updateEmployee, deleteEmployee } = useAppContext();
+  const { state, addEmployee, updateEmployee, deleteEmployee, deleteAllEmployees } = useAppContext();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [roleFilter, setRoleFilter] = useState<string>('Todos');
-  const [form, setForm] = useState<Omit<Employee, 'id'>>({ name: '', role: 'Conductor', phone: '', workGroup: '' });
+  const [groupFilter, setGroupFilter] = useState<string>(state.activeWorkGroupId || 'Todos');
+  useEffect(() => { setGroupFilter(state.activeWorkGroupId || 'Todos'); }, [state.activeWorkGroupId]);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<Omit<Employee, 'id'> & { firstName?: string, lastName?: string }>({ name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
+  useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: state.activeWorkGroupId || ''})); }, [state.activeWorkGroupId, editingId]);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
 
   const activeGroupEmps = state.employees.filter(e => {
-    if (e.workGroupId !== state.activeWorkGroupId) return false;
+    if (groupFilter !== 'Todos' && e.workGroupId !== groupFilter) return false;
     if (roleFilter === 'Todos') return true;
     
     const empRole = (e.role || '').toLowerCase();
     const filterNorm = roleFilter.toLowerCase();
     
     if (filterNorm === 'conductor' && empRole.includes('conductor')) return true;
-    if (filterNorm === 'auxiliar' && (empRole.includes('ayudante') || empRole.includes('auxiliar'))) return true;
+    if (filterNorm === 'ayudante' && (empRole.includes('ayudante') || empRole.includes('auxiliar'))) return true;
     if (filterNorm === 'coordinador' && empRole.includes('coordinador')) return true;
     
     return false;
@@ -302,21 +325,27 @@ const EmployeesTab = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.name || !form.phone || !state.activeWorkGroupId) return;
+    const fullName = `${form.firstName || ''} ${form.lastName || ''}`.trim() || form.name;
+    if (!fullName || !form.workGroupId) return;
+    
+    const payload = {
+      ...form,
+      name: fullName,
+    };
     
     if (editingId) {
-      updateEmployee(editingId, form);
+      updateEmployee(editingId, payload);
     } else {
-      addEmployee(form);
+      addEmployee(payload);
     }
     
-    setForm({ name: '', role: 'Conductor', phone: '', workGroup: '' });
+    setForm({ name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
     setEditingId(null);
     setIsModalOpen(false);
   };
 
   const handleEdit = (emp: Employee) => {
-    setForm({ name: emp.name, role: emp.role, phone: emp.phone, workGroup: emp.workGroup });
+    setForm({ name: emp.name, firstName: emp.firstName || emp.name.split(' ')[0], lastName: emp.lastName || emp.name.split(' ').slice(1).join(' '), role: emp.role, phone: emp.phone, workGroup: emp.workGroup, workGroupId: emp.workGroupId || state.activeWorkGroupId || '' });
     setEditingId(emp.id);
     setIsModalOpen(true);
   };
@@ -333,20 +362,18 @@ const EmployeesTab = () => {
   };
 
   const openNewModal = () => {
-    setForm({ name: '', role: 'Conductor', phone: '', workGroup: '' });
+    setForm({ name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
     setEditingId(null);
     setIsModalOpen(true);
   };
 
-  if (!state.activeWorkGroupId) {
-    return <ContextRequiredMessage />;
-  }
+
 
   const getRoleIcon = (rawRole: string) => {
     const role = (rawRole || '').toLowerCase().trim();
-    if (role.includes('conductor')) return <Truck className="h-5 w-5 text-indigo-500" title="Conductor" />;
-    if (role.includes('ayudante') || role.includes('auxiliar')) return <HardHat className="h-5 w-5 text-emerald-500" title="Auxiliar / Ayudante" />;
-    if (role.includes('coordinador')) return <UserCog className="h-5 w-5 text-amber-500" title="Coordinador" />;
+    if (role.includes('conductor')) return <Truck className="h-5 w-5 text-emerald-500" title="Conductor" />;
+    if (role.includes('ayudante') || role.includes('auxiliar')) return <HardHat className="h-5 w-5 text-emerald-500" title="Ayudante" />;
+    if (role.includes('coordinador')) return <UserCog className="h-5 w-5 text-emerald-500" title="Coordinador" />;
     return <User className="h-5 w-5 text-slate-500" title={rawRole || 'Usuario'} />;
   };
 
@@ -357,7 +384,7 @@ const EmployeesTab = () => {
         
         <div className="flex w-full md:w-auto items-center gap-3">
           <div className="flex items-center bg-slate-100 rounded-lg p-1 w-full md:w-auto overflow-x-auto scrollbar-hide">
-            {['Todos', 'Conductor', 'Auxiliar', 'Coordinador'].map(role => (
+            {['Todos', 'Conductor', 'Ayudante', 'Coordinador'].map(role => (
               <button
                 key={role}
                 onClick={() => setRoleFilter(role)}
@@ -370,9 +397,20 @@ const EmployeesTab = () => {
             ))}
           </div>
 
+          {state.employees.length > 0 && (
+            <button 
+              onClick={() => setIsDeleteAllModalOpen(true)}
+              className="bg-red-50 text-red-600 border border-red-200 shrink-0 rounded-lg p-2 md:px-3 md:py-2 text-xs md:text-sm font-medium hover:bg-red-100 flex items-center transition-colors"
+              title="Eliminar todos los registros de personal"
+            >
+              <Trash2 className="h-4 w-4 md:mr-1.5" />
+              <span className="hidden md:inline">Vaciar Directorio</span>
+            </button>
+          )}
+
           <button 
             onClick={openNewModal}
-            className="bg-indigo-600 shrink-0 text-white rounded-lg p-2 md:px-4 md:py-2 text-sm font-medium hover:bg-indigo-700 flex items-center shadow-sm"
+            className="bg-emerald-500 shrink-0 text-white rounded-lg p-2 md:px-4 md:py-2 text-sm font-medium hover:bg-emerald-600 flex items-center shadow-sm"
           >
             <Plus className="h-5 w-5 md:mr-2" />
             <span className="hidden md:inline">Nuevo</span>
@@ -382,39 +420,65 @@ const EmployeesTab = () => {
 
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-slate-400 text-[10px] uppercase tracking-wider">
+          <thead className="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider font-semibold">
             <tr className="border-b border-slate-100">
-              <th className="px-4 py-3 font-medium rounded-tl-lg w-12 text-center">Rol</th>
-              <th className="px-4 py-3 font-medium">Nombre</th>
-              <th className="px-4 py-3 font-medium text-center">Contacto</th>
-              <th className="px-4 py-3 font-medium rounded-tr-lg text-right">Acciones</th>
+              <th className="px-4 py-3">Apellido</th>
+              <th className="px-4 py-3">Nombre</th>
+              <th className="px-4 py-3">Rol</th>
+              <th className="px-4 py-3">Grupo</th>
+              <th className="px-4 py-3 text-center">Teléfono / Contacto</th>
+              <th className="px-4 py-3 text-right">Acciones</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50 text-sm">
             {activeGroupEmps.map(emp => (
-              <tr key={emp.id} className="hover:bg-slate-50">
-                <td className="px-4 py-3">
-                  <div className="flex justify-center bg-slate-100 p-2 rounded-lg w-8 h-8 mx-auto">
-                    {getRoleIcon(emp.role)}
-                  </div>
+              <tr key={emp.id} className="hover:bg-slate-50/80 transition-colors">
+                <td className="px-4 py-3 font-semibold text-slate-900">
+                  {emp.lastName || emp.name.split(' ').slice(1).join(' ') || '-'}
                 </td>
-                <td className="px-4 py-3 font-medium text-slate-800">{emp.name}</td>
+                <td className="px-4 py-3 font-medium text-slate-700">
+                  {emp.firstName || emp.name.split(' ')[0] || emp.name}
+                </td>
                 <td className="px-4 py-3">
-                  <div className="flex space-x-3 justify-center">
-                    <a href={`tel:${emp.phone}`} className="p-2 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition-colors" title="Llamar">
-                      <Phone className="h-4 w-4" />
-                    </a>
-                    <a href={`https://wa.me/${emp.phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="p-2 bg-emerald-50 text-emerald-600 rounded-full hover:bg-emerald-100 transition-colors" title="WhatsApp">
-                      <MessageCircle className="h-4 w-4" />
-                    </a>
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
+                    emp.role === 'Conductor' 
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                      : emp.role === 'Ayudante' 
+                        ? 'bg-amber-50 text-amber-700 border border-amber-200' 
+                        : 'bg-blue-50 text-blue-700 border border-blue-200'
+                  }`}>
+                    {getRoleIcon(emp.role)}
+                    <span>{emp.role}</span>
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <span className="inline-block px-2.5 py-0.5 bg-slate-100 text-slate-700 font-medium rounded text-xs border border-slate-200">
+                    {state.workGroups.find(wg => wg.id === emp.workGroupId)?.name || emp.workGroup || '-'}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center space-x-2 justify-center">
+                    {emp.phone ? (
+                      <>
+                        <span className="text-xs text-slate-600 font-mono hidden sm:inline">{emp.phone}</span>
+                        <a href={`tel:${emp.phone}`} className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors" title="Llamar">
+                          <Phone className="h-3.5 w-3.5" />
+                        </a>
+                        <a href={`https://wa.me/${emp.phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100 transition-colors" title="WhatsApp">
+                          <MessageCircle className="h-3.5 w-3.5" />
+                        </a>
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">Sin teléfono</span>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex justify-end space-x-1">
-                    <button onClick={() => handleEdit(emp)} className="text-indigo-500 hover:text-indigo-700 p-2 hover:bg-indigo-50 rounded-lg transition-colors" title="Editar">
+                    <button onClick={() => handleEdit(emp)} className="text-emerald-600 hover:text-emerald-700 p-1.5 hover:bg-emerald-50 rounded-lg transition-colors" title="Editar">
                       <Edit2 className="h-4 w-4" />
                     </button>
-                    <button onClick={() => handleDelete(emp.id)} className="text-red-500 hover:text-red-700 p-2 hover:bg-red-50 rounded-lg transition-colors" title="Eliminar">
+                    <button onClick={() => handleDelete(emp.id)} className="text-red-500 hover:text-red-700 p-1.5 hover:bg-red-50 rounded-lg transition-colors" title="Eliminar">
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
@@ -423,8 +487,8 @@ const EmployeesTab = () => {
             ))}
             {activeGroupEmps.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
-                  {state.employees.filter(e => e.workGroupId === state.activeWorkGroupId).length === 0 
+                <td colSpan={6} className="px-4 py-10 text-center text-slate-500">
+                  {state.employees.filter(e => groupFilter !== 'Todos' ? e.workGroupId === groupFilter : true).length === 0 
                     ? "No hay personal registrado en este grupo"
                     : "No hay resultados para el filtro seleccionado"}
                 </td>
@@ -437,23 +501,34 @@ const EmployeesTab = () => {
       <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? "Editar Personal" : "Registrar Personal"}>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Nombre Completo</label>
-            <input required type="text" value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+            <label className="block text-xs font-medium text-slate-500 mb-1">Apellido</label>
+            <input required type="text" value={form.lastName || ''} onChange={e => setForm({...form, lastName: e.target.value})} placeholder="Ej. Pérez" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Nombre</label>
+            <input required type="text" value={form.firstName || ''} onChange={e => setForm({...form, firstName: e.target.value})} placeholder="Ej. Juan" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Rol</label>
-            <select value={form.role} onChange={e => setForm({...form, role: e.target.value as any})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+            <select value={form.role} onChange={e => setForm({...form, role: e.target.value as EmployeeRole})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
               <option value="Conductor">Conductor</option>
               <option value="Ayudante">Ayudante</option>
               <option value="Coordinador">Coordinador</option>
             </select>
           </div>
           <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Grupo de Trabajo</label>
+            <select required value={form.workGroupId || ''} onChange={e => setForm({...form, workGroupId: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+              <option value="">Seleccione grupo...</option>
+              {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
+            </select>
+          </div>
+          <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Teléfono</label>
-            <input required type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+            <input type="tel" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="Opcional" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
           </div>
           <div className="pt-2">
-            <button type="submit" className="w-full bg-indigo-600 text-white rounded-lg py-3 text-sm font-bold hover:bg-indigo-700 flex justify-center items-center shadow-md">
+            <button type="submit" className="w-full bg-emerald-500 text-white rounded-lg py-3 text-sm font-bold hover:bg-emerald-600 flex justify-center items-center shadow-md">
               {editingId ? "Actualizar Datos" : "Guardar Personal"}
             </button>
           </div>
@@ -467,6 +542,17 @@ const EmployeesTab = () => {
         title="Eliminar Personal"
         message="¿Está seguro de eliminar este registro? Esta acción no se puede deshacer."
       />
+
+      <ConfirmModal
+        isOpen={isDeleteAllModalOpen}
+        onClose={() => setIsDeleteAllModalOpen(false)}
+        onConfirm={() => {
+          deleteAllEmployees();
+          setIsDeleteAllModalOpen(false);
+        }}
+        title="Vaciar Directorio de Personal"
+        message="¿Está seguro de que desea eliminar a TODO el personal de todos los grupos? Esta acción no se puede deshacer."
+      />
     </div>
   );
 };
@@ -476,13 +562,14 @@ const VehiclesTab = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState<Omit<Vehicle, 'id'>>({ plate: '', internalNumber: '', capacity: 0, status: 'Operativo' });
+  const [form, setForm] = useState<Omit<Vehicle, 'id'>>({ plate: '', internalNumber: '', capacity: 0, status: 'Operativo', workGroupId: state.activeWorkGroupId || '' });
+  useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: state.activeWorkGroupId || ''})); }, [state.activeWorkGroupId, editingId]);
 
   const activeGroupVehicles = state.vehicles.filter(v => v.workGroupId === state.activeWorkGroupId);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.plate || !state.activeWorkGroupId) return;
+    if (!form.plate || !form.workGroupId) return;
     
     if (editingId) {
       updateVehicle(editingId, form);
@@ -490,13 +577,13 @@ const VehiclesTab = () => {
       addVehicle(form);
     }
     
-    setForm({ plate: '', internalNumber: '', capacity: 0, status: 'Operativo' });
+    setForm({ plate: '', internalNumber: '', capacity: 0, status: 'Operativo', workGroupId: state.activeWorkGroupId || '' });
     setEditingId(null);
     setIsModalOpen(false);
   };
 
   const handleEdit = (veh: Vehicle) => {
-    setForm({ plate: veh.plate, internalNumber: veh.internalNumber, capacity: veh.capacity, status: veh.status, workGroup: veh.workGroup });
+    setForm({ plate: veh.plate, internalNumber: veh.internalNumber, capacity: veh.capacity, status: veh.status, workGroupId: veh.workGroupId || state.activeWorkGroupId || '' });
     setEditingId(veh.id);
     setIsModalOpen(true);
   };
@@ -528,7 +615,7 @@ const VehiclesTab = () => {
         <h3 className="font-semibold text-slate-800">Flota Vehicular</h3>
         <button 
           onClick={openNewModal}
-          className="bg-indigo-600 text-white rounded-lg p-2 md:px-4 md:py-2 text-sm font-medium hover:bg-indigo-700 flex items-center shadow-sm"
+          className="bg-emerald-500 text-white rounded-lg p-2 md:px-4 md:py-2 text-sm font-medium hover:bg-emerald-600 flex items-center shadow-sm"
         >
           <Plus className="h-5 w-5 md:mr-2" />
           <span className="hidden md:inline">Nuevo Vehículo</span>
@@ -541,11 +628,11 @@ const VehiclesTab = () => {
             <div className="flex justify-between items-start w-full">
               <div>
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Móvil</p>
-                <h4 className="font-bold text-indigo-700 text-2xl mb-1">{veh.internalNumber || 'N/A'}</h4>
+                <h4 className="font-bold text-emerald-600 text-2xl mb-1">{veh.internalNumber || 'N/A'}</h4>
                 <p className="text-sm text-slate-600 uppercase"><span className="font-medium">{veh.plate}</span></p>
               </div>
               <div className="flex space-x-1">
-                <button onClick={() => handleEdit(veh)} className="text-indigo-400 hover:text-indigo-600 p-1.5 bg-white rounded-lg shadow-sm border border-slate-100 hover:bg-indigo-50 transition-colors" title="Editar">
+                <button onClick={() => handleEdit(veh)} className="text-amber-400 hover:text-emerald-500 p-1.5 bg-white rounded-lg shadow-sm border border-slate-100 hover:bg-emerald-50 transition-colors" title="Editar">
                   <Edit2 className="h-4 w-4" />
                 </button>
                 <button onClick={() => handleDelete(veh.id)} className="text-slate-400 hover:text-red-500 p-1.5 bg-white rounded-lg shadow-sm border border-slate-100 hover:bg-red-50 transition-colors" title="Eliminar">
@@ -575,25 +662,33 @@ const VehiclesTab = () => {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Número Interno (Móvil)</label>
-            <input required type="text" value={form.internalNumber} onChange={e => setForm({...form, internalNumber: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-lg text-indigo-700" placeholder="Ej. 101" />
+            <input required type="text" value={form.internalNumber} onChange={e => setForm({...form, internalNumber: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-bold text-lg text-emerald-600" placeholder="Ej. 101" />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Placa / Patente</label>
-            <input required type="text" value={form.plate} onChange={e => setForm({...form, plate: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none uppercase" placeholder="Ej. ABC-123" />
+            <input required type="text" value={form.plate} onChange={e => setForm({...form, plate: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none uppercase" placeholder="Ej. ABC-123" />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Capacidad (Ton/Vol)</label>
-            <input type="number" min="0" value={form.capacity} onChange={e => setForm({...form, capacity: Number(e.target.value)})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+            <input type="number" min="0" value={form.capacity} onChange={e => setForm({...form, capacity: Number(e.target.value)})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Estado</label>
-            <select value={form.status} onChange={e => setForm({...form, status: e.target.value as any})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+            <select value={form.status} onChange={e => setForm({...form, status: e.target.value as any})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
               <option value="Operativo">Operativo</option>
               <option value="Inoperativo">Inoperativo</option>
             </select>
           </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Grupo de Trabajo</label>
+            <select required value={form.workGroupId || ''} onChange={e => setForm({...form, workGroupId: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+              <option value="">Seleccione grupo...</option>
+              {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
+            </select>
+          </div>
           <div className="pt-2">
-            <button type="submit" className="w-full bg-indigo-600 text-white rounded-lg py-3 text-sm font-bold hover:bg-indigo-700 flex justify-center items-center shadow-md">
+            <button type="submit" className="w-full bg-emerald-500 text-white rounded-lg py-3 text-sm font-bold hover:bg-emerald-600 flex justify-center items-center shadow-md">
               Guardar Vehículo
             </button>
           </div>
@@ -616,7 +711,8 @@ const RoutesTab = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState<Omit<RouteDef, 'id'>>({ name: '', code: '', operatingDays: [], origin: '', destination: '', estimatedHours: 0 });
+  const [form, setForm] = useState<Omit<RouteDef, 'id'>>({ name: '', code: '', operatingDays: [], origin: '', destination: '', estimatedHours: 0, workGroupId: state.activeWorkGroupId || '' });
+  useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: state.activeWorkGroupId || ''})); }, [state.activeWorkGroupId, editingId]);
 
   const activeGroupRoutes = state.routes.filter(r => r.workGroupId === state.activeWorkGroupId);
 
@@ -649,13 +745,13 @@ const RoutesTab = () => {
       addRoute(form);
     }
     
-    setForm({ name: '', code: '', operatingDays: [], origin: '', destination: '', estimatedHours: 0 });
+    setForm({ name: '', code: '', operatingDays: [], origin: '', destination: '', estimatedHours: 0, workGroupId: state.activeWorkGroupId || '' });
     setEditingId(null);
     setIsModalOpen(false);
   };
 
   const handleEdit = (route: RouteDef) => {
-    setForm({ name: route.name, code: route.code, operatingDays: route.operatingDays || [], origin: route.origin, destination: route.destination, estimatedHours: route.estimatedHours, workGroup: route.workGroup });
+    setForm({ name: route.name, code: route.code, operatingDays: route.operatingDays || [], origin: route.origin, destination: route.destination, estimatedHours: route.estimatedHours, workGroupId: route.workGroupId || state.activeWorkGroupId || '' });
     setEditingId(route.id);
     setIsModalOpen(true);
   };
@@ -694,7 +790,7 @@ const RoutesTab = () => {
         <h3 className="font-semibold text-slate-800">Catálogo de Rutas</h3>
         <button 
           onClick={openNewModal}
-          className="bg-indigo-600 text-white rounded-lg p-2 md:px-4 md:py-2 text-sm font-medium hover:bg-indigo-700 flex items-center shadow-sm"
+          className="bg-emerald-500 text-white rounded-lg p-2 md:px-4 md:py-2 text-sm font-medium hover:bg-emerald-600 flex items-center shadow-sm"
         >
           <Plus className="h-5 w-5 md:mr-2" />
           <span className="hidden md:inline">Nueva Ruta</span>
@@ -705,7 +801,7 @@ const RoutesTab = () => {
         {activeGroupRoutes.map(route => (
           <div key={route.id} className="border border-slate-200 rounded-xl p-5 bg-white shadow-sm relative group hover:border-slate-300 transition-colors">
             <div className="absolute top-3 right-3 flex space-x-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-              <button onClick={() => handleEdit(route)} className="text-indigo-400 hover:text-indigo-600 bg-white rounded-lg shadow-sm border border-slate-100 p-1.5 hover:bg-indigo-50 transition-colors" title="Editar">
+              <button onClick={() => handleEdit(route)} className="text-amber-400 hover:text-emerald-500 bg-white rounded-lg shadow-sm border border-slate-100 p-1.5 hover:bg-emerald-50 transition-colors" title="Editar">
                 <Edit2 className="h-4 w-4" />
               </button>
               <button onClick={() => handleDelete(route.id)} className="text-slate-400 hover:text-red-500 bg-white rounded-lg shadow-sm border border-slate-100 p-1.5 hover:bg-red-50 transition-colors" title="Eliminar">
@@ -725,7 +821,7 @@ const RoutesTab = () => {
             </div>
 
             <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md font-bold uppercase tracking-wider">
+              <span className="text-[10px] text-emerald-500 bg-amber-50 px-2 py-1 rounded-md font-bold uppercase tracking-wider">
                 {getDaysString(route.operatingDays)}
               </span>
               <div className="text-xs text-slate-500 font-medium">
@@ -747,11 +843,11 @@ const RoutesTab = () => {
           <div className="grid grid-cols-3 gap-3">
             <div className="col-span-1">
               <label className="block text-xs font-medium text-slate-500 mb-1">Código</label>
-              <input required type="text" value={form.code} onChange={e => setForm({...form, code: e.target.value.replace(/\D/g, '')})} placeholder="Ej. 101" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-indigo-500 outline-none" />
+              <input required type="text" value={form.code} onChange={e => setForm({...form, code: e.target.value.replace(/\D/g, '')})} placeholder="Ej. 101" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
             </div>
             <div className="col-span-2">
               <label className="block text-xs font-medium text-slate-500 mb-1">Nombre de la Ruta</label>
-              <input required type="text" value={form.name} onChange={e => setForm({...form, name: e.target.value})} placeholder="Ej. Ruta Norte Express" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+              <input required type="text" value={form.name} onChange={e => setForm({...form, name: e.target.value})} placeholder="Ej. Ruta Norte Express" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
             </div>
           </div>
           
@@ -767,7 +863,7 @@ const RoutesTab = () => {
                     onClick={() => handleDayToggle(day.id)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors border ${
                       isSelected 
-                        ? 'bg-indigo-600 text-white border-indigo-600' 
+                        ? 'bg-emerald-500 text-white border-emerald-500' 
                         : 'bg-white text-slate-500 border-slate-300 hover:bg-slate-50'
                     }`}
                   >
@@ -784,21 +880,30 @@ const RoutesTab = () => {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1">Origen</label>
-              <input required type="text" value={form.origin} onChange={e => setForm({...form, origin: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+              <input required type="text" value={form.origin} onChange={e => setForm({...form, origin: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1">Destino</label>
-              <input required type="text" value={form.destination} onChange={e => setForm({...form, destination: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+              <input required type="text" value={form.destination} onChange={e => setForm({...form, destination: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
             </div>
           </div>
           
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Tiempo Estimado (Horas)</label>
-            <input type="number" min="0.5" step="0.5" value={form.estimatedHours} onChange={e => setForm({...form, estimatedHours: Number(e.target.value)})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Tiempo Estimado (Horas)</label>
+              <input type="number" min="0.5" step="0.5" value={form.estimatedHours} onChange={e => setForm({...form, estimatedHours: Number(e.target.value)})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Grupo de Trabajo</label>
+              <select required value={form.workGroupId || ''} onChange={e => setForm({...form, workGroupId: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+                <option value="">Seleccione grupo...</option>
+                {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
+              </select>
+            </div>
           </div>
           
           <div className="pt-2">
-            <button type="submit" disabled={form.operatingDays.length === 0} className="w-full bg-indigo-600 text-white rounded-lg py-3 text-sm font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center shadow-md">
+            <button type="submit" disabled={form.operatingDays.length === 0} className="w-full bg-emerald-500 text-white rounded-lg py-3 text-sm font-bold hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center shadow-md">
               Guardar Ruta
             </button>
           </div>

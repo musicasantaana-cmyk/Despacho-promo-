@@ -13,7 +13,7 @@ const DigitalClock = () => {
 
   return (
     <div className="hidden md:flex items-center text-slate-700 font-mono text-sm bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
-      <Clock className="h-4 w-4 mr-2 text-indigo-500" />
+      <Clock className="h-4 w-4 mr-2 text-amber-500" />
       {time.toLocaleTimeString()}
     </div>
   );
@@ -26,7 +26,7 @@ interface LayoutProps {
 }
 
 export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewChange }) => {
-  const { state, setBackupEmail, triggerManualBackup } = useAppContext();
+  const { state, setBackupEmail, triggerManualBackup, setActiveWorkGroup } = useAppContext();
   const [showSettings, setShowSettings] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [emailInput, setEmailInput] = useState(state.backupEmail || '');
@@ -42,7 +42,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `logistrack_backup_${new Date().getTime()}.json`;
+    link.download = `PROMODESPACHO_backup_${new Date().getTime()}.json`;
     link.click();
     triggerManualBackup();
   };
@@ -72,10 +72,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
       {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-800 flex flex-col transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="p-6 border-b border-slate-800 flex items-center space-x-3">
-          <div className="w-12 h-12 bg-indigo-500 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <Truck className="h-6 w-6 text-white" />
-          </div>
-          <h1 className="text-xl font-bold tracking-tight text-white">LogisTrack</h1>
+          <img src="/logo.png" alt="Logo" className="w-12 h-12 rounded-full object-cover bg-white p-1" onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%23f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>' }} />
+          <h1 className="text-xl font-bold tracking-tight text-white">PROMODESPACHO</h1>
         </div>
         
         <nav className="flex-1 py-6 px-4 space-y-2">
@@ -85,11 +83,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
               onClick={() => handleNav(item.id)}
               className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors duration-150 ${
                 currentView === item.id
-                  ? 'bg-slate-800 text-indigo-400 font-bold'
+                  ? 'bg-emerald-500 text-white font-bold shadow-md shadow-emerald-500/20'
                   : 'text-slate-500 hover:text-white hover:bg-slate-800'
               }`}
             >
-              <item.icon className="h-5 w-5" />
+              <item.icon className={`h-5 w-5 ${currentView === item.id ? 'text-amber-300' : ''}`} />
               <span>{item.label}</span>
             </button>
           ))}
@@ -118,7 +116,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
             </button>
             <div>
               <h1 className="text-lg md:text-xl font-bold text-slate-900">
-                LogisTrack <span className="text-slate-400 font-normal ml-2">/ {navItems.find((i) => i.id === currentView)?.label}</span>
+                PROMODESPACHO <span className="text-slate-400 font-normal ml-2">/ {navItems.find((i) => i.id === currentView)?.label}</span>
               </h1>
               <p className="hidden md:block text-[10px] text-slate-500 uppercase tracking-widest mt-1">Central Operational Management</p>
             </div>
@@ -130,7 +128,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider mr-2">Grupo:</span>
                 <select 
                   value={state.activeWorkGroupId || ''} 
-                  onChange={e => useAppContext().setActiveWorkGroup(e.target.value)}
+                  onChange={e => setActiveWorkGroup(e.target.value)}
                   className="bg-transparent text-slate-800 font-medium outline-none text-sm w-32 truncate"
                 >
                   {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
@@ -173,7 +171,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
                   value={emailInput}
                   onChange={(e) => setEmailInput(e.target.value)}
                   placeholder="admin@empresa.com"
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
                 />
                 <p className="text-xs text-slate-500 mt-2">
                   La aplicación sincronizará automáticamente los datos en segundo plano si se configura un correo.
@@ -197,7 +195,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
               </button>
               <button
                 onClick={handleSaveSettings}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
+                className="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600 transition-colors"
               >
                 Guardar Configuración
               </button>

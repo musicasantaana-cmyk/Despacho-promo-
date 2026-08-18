@@ -4,7 +4,7 @@ export const downloadCsvTemplate = (type: 'employees' | 'vehicles') => {
   let content = '';
   let filename = '';
   if (type === 'employees') {
-    content = 'Nombre,Apellido,Rol,Telefono\nJuan,Perez,Conductor,555123456\nMaria,Gomez,Ayudante,555987654';
+    content = 'APELLIDO,NOMBRE,ROLL,TELEFONO,GRUPO\nZUÑIGA BARAJAS,JEISON JAVIER,CONDUCTOR,235435464,R1\nARIZA MANCILLA,YORMAN ANDRES,AYUDANTE,42354353,R1';
     filename = 'plantilla_personal.csv';
   } else {
     content = 'Placa,Numero_Movil,Capacidad\nABC-123,V-01,15\nXYZ-999,V-02,20';

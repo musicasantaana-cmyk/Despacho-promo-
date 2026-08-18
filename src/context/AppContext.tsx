@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { AppState, Employee, Vehicle, RouteDef, Assignment, Incident, WorkGroup } from '../types';
+import { AppState, Employee, EmployeeRole, Vehicle, RouteDef, Assignment, Incident, WorkGroup, CrewTemplate } from '../types';
 
 interface AppContextProps {
   state: AppState;
@@ -9,12 +9,17 @@ interface AppContextProps {
   addEmployee: (emp: Omit<Employee, 'id'>) => void;
   updateEmployee: (id: string, emp: Partial<Employee>) => void;
   deleteEmployee: (id: string) => void;
+  deleteAllEmployees: () => void;
+  importEmployeesBulk: (rawRows: any[]) => void;
   addVehicle: (veh: Omit<Vehicle, 'id'>) => void;
   updateVehicle: (id: string, veh: Partial<Vehicle>) => void;
   deleteVehicle: (id: string) => void;
   addRoute: (route: Omit<RouteDef, 'id'>) => void;
   updateRoute: (id: string, route: Partial<RouteDef>) => void;
   deleteRoute: (id: string) => void;
+  addCrew: (crew: Omit<CrewTemplate, 'id'>) => void;
+  updateCrew: (id: string, crew: Partial<CrewTemplate>) => void;
+  deleteCrew: (id: string) => void;
   addAssignment: (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => void;
   updateAssignmentStatus: (id: string, status: Assignment['status']) => void;
   addIncident: (assignmentId: string, incident: Omit<Incident, 'id' | 'timestamp'>) => void;
@@ -29,6 +34,7 @@ const defaultState: AppState = {
   vehicles: [],
   routes: [],
   assignments: [],
+  crews: [],
   backupEmail: null,
   lastBackupDate: null,
 };
@@ -39,22 +45,29 @@ const generateId = () => Math.random().toString(36).substring(2, 9);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<AppState>(() => {
-    const saved = localStorage.getItem('logistrack_data');
+    const saved = localStorage.getItem('PROMODESPACHO_data');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         // Ensure workGroups exists for legacy data
         if (!parsed.workGroups) parsed.workGroups = [];
+        const clearedFlag = localStorage.getItem('PROMODESPACHO_cleared_personnel_v1');
+        if (!clearedFlag) {
+          parsed.employees = [];
+          localStorage.setItem('PROMODESPACHO_cleared_personnel_v1', 'true');
+        }
         return parsed;
       } catch (e) {
         console.error('Failed to parse local data', e);
       }
+    } else {
+      localStorage.setItem('PROMODESPACHO_cleared_personnel_v1', 'true');
     }
     return defaultState;
   });
 
   useEffect(() => {
-    localStorage.setItem('logistrack_data', JSON.stringify(state));
+    localStorage.setItem('PROMODESPACHO_data', JSON.stringify(state));
     // Simulate automatic background backup if email is set
     if (state.backupEmail) {
       const interval = setInterval(() => {
@@ -101,7 +114,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addEmployee = (emp: Omit<Employee, 'id'>) => {
     setState((prev) => ({
       ...prev,
-      employees: [...prev.employees, { ...emp, id: generateId(), workGroupId: prev.activeWorkGroupId || undefined }],
+      employees: [...prev.employees, { ...emp, id: generateId(), workGroupId: emp.workGroupId || prev.activeWorkGroupId || undefined }],
     }));
   };
 
@@ -116,10 +129,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setState((prev) => ({ ...prev, employees: prev.employees.filter((e) => e.id !== id) }));
   };
 
+  const deleteAllEmployees = () => {
+    setState((prev) => ({ ...prev, employees: [] }));
+  };
+
+  const importEmployeesBulk = (rawRows: any[]) => {
+    setState((prev) => {
+      let currentWorkGroups = [...prev.workGroups];
+      const newEmployees: Employee[] = [];
+
+      const normalizeRole = (val: any): EmployeeRole => {
+        const str = String(val || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+        if (str.includes('conduct') || str.includes('chofer') || str.includes('driver')) return 'Conductor';
+        if (str.includes('ayud') || str.includes('auxil') || str.includes('peon') || str.includes('asist')) return 'Ayudante';
+        if (str.includes('coord') || str.includes('superv') || str.includes('lider') || str.includes('jefe') || str.includes('admin')) return 'Coordinador';
+        return 'Conductor';
+      };
+
+      rawRows.forEach((row) => {
+        const lastName = String(row.apellido || row.apellidos || row.lastname || row.last_name || '').trim();
+        const firstName = String(row.nombre || row.nombres || row.firstname || row.first_name || row.name || '').trim();
+        const rawRole = row.roll || row.rol || row.cargo || row.puesto || row.funcion || row.role || '';
+        const role = normalizeRole(rawRole);
+        const phone = String(row.telefono || row.telefonos || row.celular || row.tel || row.phone || row.movil || '').trim();
+        const rawGroup = String(row.grupo || row.grupos || row.group || row.area || row.zona || '').trim();
+
+        let assignedGroupId = prev.activeWorkGroupId || undefined;
+
+        if (rawGroup) {
+          let foundGroup = currentWorkGroups.find(
+            (g) => g.name.trim().toLowerCase() === rawGroup.toLowerCase()
+          );
+          if (!foundGroup) {
+            foundGroup = { id: generateId(), name: rawGroup };
+            currentWorkGroups.push(foundGroup);
+          }
+          assignedGroupId = foundGroup.id;
+        }
+
+        const fullName = `${firstName} ${lastName}`.trim() || firstName || lastName || 'Sin Nombre';
+
+        newEmployees.push({
+          id: generateId(),
+          name: fullName,
+          firstName: firstName,
+          lastName: lastName,
+          role,
+          phone,
+          workGroup: rawGroup,
+          workGroupId: assignedGroupId,
+        });
+      });
+
+      const nextActiveGroupId = prev.activeWorkGroupId || (currentWorkGroups[0]?.id ?? null);
+
+      return {
+        ...prev,
+        workGroups: currentWorkGroups,
+        activeWorkGroupId: nextActiveGroupId,
+        employees: [...prev.employees, ...newEmployees],
+      };
+    });
+  };
+
   const addVehicle = (veh: Omit<Vehicle, 'id'>) => {
     setState((prev) => ({
       ...prev,
-      vehicles: [...prev.vehicles, { ...veh, id: generateId(), workGroupId: prev.activeWorkGroupId || undefined }],
+      vehicles: [...prev.vehicles, { ...veh, id: generateId(), workGroupId: veh.workGroupId || prev.activeWorkGroupId || undefined }],
     }));
   };
 
@@ -137,7 +213,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addRoute = (route: Omit<RouteDef, 'id'>) => {
     setState((prev) => ({
       ...prev,
-      routes: [...prev.routes, { ...route, id: generateId(), workGroupId: prev.activeWorkGroupId || undefined }],
+      routes: [...prev.routes, { ...route, id: generateId(), workGroupId: route.workGroupId || prev.activeWorkGroupId || undefined }],
     }));
   };
 
@@ -150,6 +226,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteRoute = (id: string) => {
     setState((prev) => ({ ...prev, routes: prev.routes.filter((r) => r.id !== id) }));
+  };
+
+  const addCrew = (crew: Omit<CrewTemplate, 'id'>) => {
+    setState((prev) => ({
+      ...prev,
+      crews: [...(prev.crews || []), { ...crew, id: generateId(), workGroupId: prev.activeWorkGroupId || undefined }],
+    }));
+  };
+
+  const updateCrew = (id: string, crew: Partial<CrewTemplate>) => {
+    setState((prev) => ({
+      ...prev,
+      crews: (prev.crews || []).map((c) => (c.id === id ? { ...c, ...crew } : c)),
+    }));
+  };
+
+  const deleteCrew = (id: string) => {
+    setState((prev) => ({ ...prev, crews: (prev.crews || []).filter((c) => c.id !== id) }));
   };
 
   const addAssignment = (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => {
@@ -200,12 +294,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addEmployee,
         updateEmployee,
         deleteEmployee,
+        deleteAllEmployees,
+        importEmployeesBulk,
         addVehicle,
         updateVehicle,
         deleteVehicle,
         addRoute,
         updateRoute,
         deleteRoute,
+        addCrew,
+        updateCrew,
+        deleteCrew,
         addAssignment,
         updateAssignmentStatus,
         addIncident,

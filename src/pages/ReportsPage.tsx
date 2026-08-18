@@ -113,7 +113,7 @@ export const ReportsPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-2xl border border-slate-200 shadow-sm gap-4">
         <div>
           <h2 className="text-lg font-semibold text-slate-800">Panel de Reportes</h2>
-          <p className="text-sm text-slate-500">Métricas del grupo: <strong className="text-indigo-600">{state.workGroups.find(g => g.id === state.activeWorkGroupId)?.name}</strong></p>
+          <p className="text-sm text-slate-500">Métricas del grupo: <strong className="text-emerald-500">{state.workGroups.find(g => g.id === state.activeWorkGroupId)?.name}</strong></p>
         </div>
       </div>
 
@@ -121,8 +121,8 @@ export const ReportsPage: React.FC = () => {
         <MetricCard 
           title="Total Asignaciones" 
           value={metrics.totalAssignments.toString()} 
-          icon={<BarChart2 className="h-6 w-6 text-indigo-600" />}
-          bg="bg-indigo-50"
+          icon={<BarChart2 className="h-6 w-6 text-emerald-500" />}
+          bg="bg-amber-50"
           onClick={() => setActiveDetail('asignadas')}
         />
         <MetricCard 
@@ -140,7 +140,7 @@ export const ReportsPage: React.FC = () => {
         <MetricCard 
           title="Novedades Registradas" 
           value={metrics.totalIncidents.toString()} 
-          icon={<AlertTriangle className="h-6 w-6 text-amber-600" />}
+          icon={<AlertTriangle className="h-6 w-6 text-emerald-600" />}
           bg="bg-amber-50"
           onClick={() => setActiveDetail('novedades')}
         />
@@ -170,7 +170,7 @@ export const ReportsPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
           <h3 className="font-bold flex items-center gap-2 mb-6">
-            <PieChartIcon className="h-5 w-5 text-indigo-500" />
+            <PieChartIcon className="h-5 w-5 text-emerald-500" />
             Estado de Asignaciones
           </h3>
           <div className="h-64">
@@ -252,7 +252,7 @@ export const ReportsPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col shadow-sm">
           <h3 className="font-bold flex items-center gap-2 mb-2">
-            <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+            <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
             Reporte de Operaciones
           </h3>
           <p className="text-sm text-slate-500 mb-6 flex-1">
@@ -260,7 +260,7 @@ export const ReportsPage: React.FC = () => {
           </p>
           <button 
             onClick={handleExportAssignments}
-            className="w-full flex items-center justify-center bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl py-3 text-sm font-bold transition-colors"
+            className="w-full flex items-center justify-center bg-amber-50 text-emerald-500 hover:bg-amber-100 rounded-xl py-3 text-sm font-bold transition-colors"
           >
             <Download className="h-4 w-4 mr-2" />
             Exportar Asignaciones (CSV)
@@ -303,7 +303,7 @@ export const ReportsPage: React.FC = () => {
                       <span className="flex items-center"><Truck className="h-3 w-3 mr-1" />Móvil {vehicle?.internalNumber || 'N/A'}</span>
                     </div>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-1 bg-indigo-100 text-indigo-700 rounded-full w-fit uppercase tracking-wider">
+                  <span className="text-[10px] font-bold px-2 py-1 bg-amber-100 text-emerald-600 rounded-full w-fit uppercase tracking-wider">
                     {assignment.status}
                   </span>
                 </div>
@@ -372,7 +372,7 @@ const MetricCard = ({ title, value, icon, bg, onClick }: { title: string, value:
   return (
     <Component 
       onClick={onClick}
-      className={`bg-white p-4 rounded-xl border border-slate-200 flex flex-col justify-between h-32 shadow-sm text-left ${onClick ? 'cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all' : ''}`}
+      className={`bg-white p-4 rounded-xl border border-slate-200 flex flex-col justify-between h-32 shadow-sm text-left ${onClick ? 'cursor-pointer hover:border-amber-300 hover:shadow-md transition-all' : ''}`}
     >
       <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">{title}</span>
       <div className="flex items-end justify-between w-full">

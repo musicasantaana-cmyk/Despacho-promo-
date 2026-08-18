@@ -32,7 +32,7 @@ export const TrackingPage: React.FC = () => {
     switch (status) {
       case 'Pendiente': return <span className="px-2 py-1 bg-slate-100 text-slate-500 text-[10px] rounded-full font-bold uppercase flex items-center tracking-wider"><Clock className="h-3 w-3 mr-1" /> Pendiente</span>;
       case 'Salida de Base': return <span className="px-2 py-1 bg-blue-100 text-blue-700 text-[10px] rounded-full font-bold uppercase flex items-center tracking-wider"><ArrowRightCircle className="h-3 w-3 mr-1" /> Salida Base</span>;
-      case 'Inicio de Ruta': return <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-[10px] rounded-full font-bold uppercase flex items-center tracking-wider"><Navigation className="h-3 w-3 mr-1" /> Inicio Ruta</span>;
+      case 'Inicio de Ruta': return <span className="px-2 py-1 bg-amber-100 text-emerald-600 text-[10px] rounded-full font-bold uppercase flex items-center tracking-wider"><Navigation className="h-3 w-3 mr-1" /> Inicio Ruta</span>;
       case 'Fin de Ruta': return <span className="px-2 py-1 bg-purple-100 text-purple-700 text-[10px] rounded-full font-bold uppercase flex items-center tracking-wider"><MapPin className="h-3 w-3 mr-1" /> Fin Ruta</span>;
       case 'Relleno': return <span className="px-2 py-1 bg-amber-100 text-amber-700 text-[10px] rounded-full font-bold uppercase flex items-center tracking-wider"><Truck className="h-3 w-3 mr-1" /> Relleno</span>;
       case 'Base': return <span className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] rounded-full font-bold uppercase flex items-center tracking-wider"><CheckCircle className="h-3 w-3 mr-1" /> Base</span>;
@@ -66,7 +66,7 @@ export const TrackingPage: React.FC = () => {
       {/* List */}
       <div className={`lg:col-span-5 bg-white border border-slate-200 rounded-2xl flex-col shadow-sm ${selectedAssignment ? 'hidden lg:flex' : 'flex'} h-[calc(100vh-10rem)] lg:h-[calc(100vh-8rem)]`}>
         <div className="p-4 border-b border-slate-100">
-          <h3 className="font-bold flex items-center gap-2 mb-3"><div className="w-2 h-2 rounded-full bg-indigo-500"></div> Control de Rutas</h3>
+          <h3 className="font-bold flex items-center gap-2 mb-3"><div className="w-2 h-2 rounded-full bg-emerald-500"></div> Control de Rutas</h3>
           
           {/* Status Counters */}
           <div className="grid grid-cols-5 gap-1 mb-2">
@@ -74,16 +74,16 @@ export const TrackingPage: React.FC = () => {
               <span className="text-[9px] font-bold text-blue-600 uppercase mb-0.5">Salida</span>
               <span className="text-sm font-black text-blue-800">{metrics.salida}</span>
             </div>
-            <div className="flex flex-col items-center p-1.5 bg-indigo-50 rounded-lg border border-indigo-100">
-              <span className="text-[9px] font-bold text-indigo-600 uppercase mb-0.5">Inicio</span>
-              <span className="text-sm font-black text-indigo-800">{metrics.inicio}</span>
+            <div className="flex flex-col items-center p-1.5 bg-amber-50 rounded-lg border border-amber-100">
+              <span className="text-[9px] font-bold text-emerald-500 uppercase mb-0.5">Inicio</span>
+              <span className="text-sm font-black text-amber-800">{metrics.inicio}</span>
             </div>
             <div className="flex flex-col items-center p-1.5 bg-purple-50 rounded-lg border border-purple-100">
               <span className="text-[9px] font-bold text-purple-600 uppercase mb-0.5">Fin</span>
               <span className="text-sm font-black text-purple-800">{metrics.fin}</span>
             </div>
             <div className="flex flex-col items-center p-1.5 bg-amber-50 rounded-lg border border-amber-100">
-              <span className="text-[9px] font-bold text-amber-600 uppercase mb-0.5">Relleno</span>
+              <span className="text-[9px] font-bold text-emerald-600 uppercase mb-0.5">Relleno</span>
               <span className="text-sm font-black text-amber-800">{metrics.relleno}</span>
             </div>
             <div className="flex flex-col items-center p-1.5 bg-emerald-50 rounded-lg border border-emerald-100">
@@ -104,7 +104,7 @@ export const TrackingPage: React.FC = () => {
                 onClick={() => setSelectedAssignment(assignment)}
                 className={`w-full text-left p-3 rounded-lg border transition-all ${
                   selectedAssignment?.id === assignment.id 
-                    ? 'border-indigo-500 ring-1 ring-indigo-500 bg-indigo-50/50' 
+                    ? 'border-emerald-500 ring-1 ring-emerald-500 bg-amber-50/50' 
                     : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                 }`}
               >
@@ -119,7 +119,7 @@ export const TrackingPage: React.FC = () => {
                   </span>
                   <span className="flex items-center"><Truck className="h-3 w-3 mr-1 text-slate-400" /> Móvil {vehicle?.internalNumber || 'N/A'}</span>
                   {assignment.incidents.length > 0 && (
-                    <span className="text-amber-600 font-medium flex items-center mt-1">
+                    <span className="text-emerald-600 font-medium flex items-center mt-1">
                       <AlertTriangle className="h-3 w-3 mr-1" /> {assignment.incidents.length} novedad(es) registrada(s)
                     </span>
                   )}
@@ -156,7 +156,7 @@ export const TrackingPage: React.FC = () => {
                   <select 
                     value={selectedAssignment.status} 
                     onChange={e => handleStatusChange(e.target.value as any)}
-                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
                   >
                     <option value="Pendiente">Pendiente</option>
                     <option value="Salida de Base">Salida de Base</option>
@@ -249,7 +249,7 @@ export const TrackingPage: React.FC = () => {
                       <select 
                         value={incidentType} 
                         onChange={e => setIncidentType(e.target.value as IncidentType)}
-                        className="w-full sm:w-1/3 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                        className="w-full sm:w-1/3 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
                       >
                         <option value="Retraso">Retraso</option>
                         <option value="Mecánico">Falla Mecánica</option>
@@ -263,7 +263,7 @@ export const TrackingPage: React.FC = () => {
                         value={incidentDesc}
                         onChange={e => setIncidentDesc(e.target.value)}
                         placeholder="Descripción de la novedad..."
-                        className="w-full sm:flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                        className="w-full sm:flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
                       />
                     </div>
                     <div className="flex justify-end">

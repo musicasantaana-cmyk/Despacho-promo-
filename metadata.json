@@ -1,5 +1,5 @@
 {
-  "name": "LogisTrack",
+  "name": "PROMODESPACHO",
   "description": "Sistema de gestión logística y de personal, con módulos de administración, asignación, seguimiento en tiempo real y reportes.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
