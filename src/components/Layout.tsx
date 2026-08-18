@@ -3,6 +3,7 @@ import { Truck, Map, Activity, BarChart2, Settings, Cloud, X, Menu, Clock, Radio
 import { useAppContext } from '../context/AppContext';
 import { exportToCsv } from '../utils/exportCsv';
 import { SyncStatusModal } from './SyncStatusModal';
+import { PromoambientalLogo, PromoEmblem } from './PromoambientalLogo';
 
 const DigitalClock = () => {
   const [time, setTime] = useState(new Date());
@@ -44,7 +45,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `PROMODESPACHO_backup_${new Date().getTime()}.json`;
+    link.download = `PROMOAMBIENTAL_backup_${new Date().getTime()}.json`;
     link.click();
     triggerManualBackup();
   };
@@ -73,9 +74,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
 
       {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-800 flex flex-col transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="p-6 border-b border-slate-800 flex items-center space-x-3">
-          <img src="/logo.png" alt="Logo" className="w-12 h-12 rounded-full object-cover bg-white p-1" onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%23f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>' }} />
-          <h1 className="text-xl font-bold tracking-tight text-white">PROMODESPACHO</h1>
+        <div className="p-5 border-b border-slate-800">
+          <PromoambientalLogo variant="full" theme="dark" size="md" />
         </div>
         
         <nav className="flex-1 py-6 px-4 space-y-2">
@@ -135,11 +135,19 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
             >
               <Menu className="h-6 w-6" />
             </button>
-            <div>
-              <h1 className="text-lg md:text-xl font-bold text-slate-900">
-                PROMODESPACHO <span className="text-slate-400 font-normal ml-2">/ {navItems.find((i) => i.id === currentView)?.label}</span>
-              </h1>
-              <p className="hidden md:block text-[10px] text-slate-500 uppercase tracking-widest mt-1">Multi-Device Central Operational Gateway</p>
+            <div className="flex items-center space-x-3">
+              <div className="md:hidden">
+                <PromoEmblem size={34} />
+              </div>
+              <div>
+                <h1 className="text-base md:text-xl font-black text-slate-900 tracking-tight flex items-center flex-wrap">
+                  <span>Promoambiental Distrito</span>
+                  <span className="text-slate-400 text-xs md:text-sm font-normal ml-2">/ {navItems.find((i) => i.id === currentView)?.label}</span>
+                </h1>
+                <p className="hidden md:block text-[10px] text-emerald-700 font-bold uppercase tracking-widest mt-0.5">
+                  S.A.S. ESP • Sistema Central de Despacho y Operaciones
+                </p>
+              </div>
             </div>
           </div>
           <div className="flex items-center space-x-3 text-sm text-slate-500">
