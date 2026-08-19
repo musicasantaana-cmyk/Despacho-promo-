@@ -113,11 +113,26 @@ export const CustomExportReportView: React.FC = () => {
           if (!hasMatchingRole) return;
 
           a.incidents.forEach(inc => {
+            let durationMinutes = 0;
+            if (inc.startTime && inc.endTime) {
+              const startParts = inc.startTime.split(':').map(Number);
+              const endParts = inc.endTime.split(':').map(Number);
+              if (startParts.length >= 2 && endParts.length >= 2) {
+                const startMins = startParts[0] * 60 + startParts[1];
+                let endMins = endParts[0] * 60 + endParts[1];
+                if (endMins < startMins) endMins += 24 * 60; // Next day completion
+                durationMinutes = endMins - startMins;
+              }
+            }
+
             rows.push({
               'ID Asignación': a.id,
-              'Fecha y Hora': inc.timestamp,
+              'Fecha Registro': inc.timestamp,
               'Tipo de Novedad': inc.type,
               'Descripción de Incidente': inc.description,
+              'Hora Inicio': inc.startTime || 'N/A',
+              'Hora Fin': inc.endTime || 'N/A',
+              'Tiempo Perdido (Minutos)': durationMinutes > 0 ? durationMinutes : 'N/A',
               'Ruta / Código': route?.code || route?.name || 'N/A',
               'Origen': route?.origin || 'N/A',
               'Destino': route?.destination || 'N/A',
@@ -167,6 +182,20 @@ export const CustomExportReportView: React.FC = () => {
         const drivers = emps.filter(e => e.role === 'Conductor').map(e => e.name).join(', ');
         const assistants = emps.filter(e => e.role === 'Ayudante').map(e => e.name).join(', ');
 
+        let totalTimeLossMinutes = 0;
+        a.incidents.forEach(inc => {
+          if (inc.startTime && inc.endTime) {
+            const startParts = inc.startTime.split(':').map(Number);
+            const endParts = inc.endTime.split(':').map(Number);
+            if (startParts.length >= 2 && endParts.length >= 2) {
+              const startMins = startParts[0] * 60 + startParts[1];
+              let endMins = endParts[0] * 60 + endParts[1];
+              if (endMins < startMins) endMins += 24 * 60;
+              totalTimeLossMinutes += endMins - startMins;
+            }
+          }
+        });
+
         masterRows.push({
           'ID Asignación': a.id,
           'Fecha Asignada': a.date,
@@ -182,6 +211,7 @@ export const CustomExportReportView: React.FC = () => {
           'Total Personal': emps.length,
           'Estado Actual': a.status,
           'Total Novedades': a.incidents.length,
+          'Total Tiempo Perdido (Minutos)': totalTimeLossMinutes > 0 ? totalTimeLossMinutes : 'N/A',
         });
       });
     return masterRows;

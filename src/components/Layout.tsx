@@ -95,8 +95,24 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
           ))}
         </nav>
 
-        {/* Sync status card in sidebar */}
+        {/* Mobile Group Filter & Sync status card in sidebar */}
         <div className="p-4 border-t border-slate-800 space-y-2">
+          {/* Mobile Group Filter */}
+          {state.workGroups.length > 0 && (
+            <div className="md:hidden flex flex-col space-y-1 mb-4 bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Grupo Operativo Actual
+              </label>
+              <select 
+                value={state.activeWorkGroupId || ''} 
+                onChange={e => setActiveWorkGroup(e.target.value)}
+                className="bg-slate-900 text-slate-200 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-medium outline-none focus:ring-1 focus:ring-emerald-500 w-full"
+              >
+                {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
+              </select>
+            </div>
+          )}
+
           <button
             onClick={() => setShowSyncModal(true)}
             className="w-full bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 rounded-xl p-3 text-left transition-all group"

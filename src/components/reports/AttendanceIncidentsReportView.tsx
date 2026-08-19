@@ -4,7 +4,8 @@ import { exportToCsv } from '../../utils/exportCsv';
 import { 
   Users, AlertTriangle, CheckCircle, Clock, Filter, Download, 
   Calendar, Briefcase, Layers, Search, ChevronRight, UserCheck, 
-  UserX, Shield, AlertCircle, Phone, Truck, FileSpreadsheet
+  UserX, Shield, AlertCircle, Phone, Truck, FileSpreadsheet,
+  BarChart2
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { Employee, Assignment, Incident, EmployeeRole } from '../../types';
@@ -94,6 +95,7 @@ export const AttendanceIncidentsReportView: React.FC = () => {
       routeCode: string;
       vehiclePlate: string;
       groupName: string;
+      durationMinutes: number;
     }[] = [];
 
     filteredAssignments.forEach(a => {
@@ -106,6 +108,18 @@ export const AttendanceIncidentsReportView: React.FC = () => {
           .filter(Boolean);
 
         a.incidents.forEach(inc => {
+          let durationMinutes = 0;
+          if (inc.startTime && inc.endTime) {
+            const startParts = inc.startTime.split(':').map(Number);
+            const endParts = inc.endTime.split(':').map(Number);
+            if (startParts.length >= 2 && endParts.length >= 2) {
+              const startMins = startParts[0] * 60 + startParts[1];
+              let endMins = endParts[0] * 60 + endParts[1];
+              if (endMins < startMins) endMins += 24 * 60; // Next day completion
+              durationMinutes = endMins - startMins;
+            }
+          }
+
           list.push({
             incident: inc,
             assignment: a,
@@ -113,6 +127,7 @@ export const AttendanceIncidentsReportView: React.FC = () => {
             routeCode: route?.code || route?.name || 'N/A',
             vehiclePlate: vehicle?.plate || 'N/A',
             groupName: group?.name || 'General',
+            durationMinutes,
           });
         });
       }
@@ -175,14 +190,30 @@ export const AttendanceIncidentsReportView: React.FC = () => {
       'Otro': 0
     };
 
+    const incidentTypeTimeLoss: Record<string, number> = {
+      'Retraso': 0,
+      'Mecánico': 0,
+      'Personal': 0,
+      'Clima': 0,
+      'Otro': 0
+    };
+
+    let totalTimeLossMinutes = 0;
+
     incidentsList.forEach(item => {
       const type = item.incident.type || 'Otro';
       incidentTypeCounts[type] = (incidentTypeCounts[type] || 0) + 1;
+      incidentTypeTimeLoss[type] = (incidentTypeTimeLoss[type] || 0) + item.durationMinutes;
+      totalTimeLossMinutes += item.durationMinutes;
     });
 
     const incidentData = Object.entries(incidentTypeCounts)
       .map(([name, value]) => ({ name, value }))
       .filter(d => d.value > 0);
+
+    const timeLossData = Object.entries(incidentTypeTimeLoss)
+      .map(([name, minutes]) => ({ name, minutes, hours: (minutes / 60).toFixed(1) }))
+      .filter(d => d.minutes > 0);
 
     return {
       totalFiltered,
@@ -194,6 +225,9 @@ export const AttendanceIncidentsReportView: React.FC = () => {
       coordinators,
       totalIncidents: incidentsList.length,
       incidentData,
+      timeLossData,
+      totalTimeLossMinutes,
+      totalTimeLossHours: (totalTimeLossMinutes / 60).toFixed(1)
     };
   }, [filteredEmployees, assignedEmployeeIds, incidentsList]);
 
@@ -227,9 +261,12 @@ export const AttendanceIncidentsReportView: React.FC = () => {
   const handleExportIncidentsDetail = () => {
     const data = incidentsList.map((item, index) => ({
       '#': index + 1,
-      'Fecha / Hora': item.incident.timestamp,
+      'Fecha / Hora Registro': item.incident.timestamp,
       'Tipo de Novedad': item.incident.type,
       'Descripción': item.incident.description,
+      'Hora Inicio': item.incident.startTime || 'N/A',
+      'Hora Fin': item.incident.endTime || 'N/A',
+      'Tiempo Perdido (Minutos)': item.durationMinutes > 0 ? item.durationMinutes : 'N/A',
       'Ruta / Código': item.routeCode,
       'Móvil / Placa': item.vehiclePlate,
       'Grupo de Trabajo': item.groupName,
@@ -623,8 +660,55 @@ export const AttendanceIncidentsReportView: React.FC = () => {
         </div>
       </div>
 
+      {/* Time Loss Indicators Row */}
+      {metrics.totalTimeLossMinutes > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
+          {/* Total Time Loss KPI */}
+          <div className="bg-white border border-rose-100 rounded-2xl p-5 shadow-xs flex items-center justify-between bg-gradient-to-r from-rose-50/50 to-white">
+            <div>
+              <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2 mb-1">
+                <Clock className="h-4 w-4 text-rose-500" />
+                Tiempo Perdido Total (Rutas)
+              </h3>
+              <p className="text-xs text-slate-500">Suma de duración de novedades reportadas con hora inicio y fin.</p>
+            </div>
+            <div className="text-right">
+              <span className="text-3xl font-black text-rose-600">{metrics.totalTimeLossHours}</span>
+              <span className="text-sm font-bold text-rose-400 ml-1">Horas</span>
+              <div className="text-[10px] font-semibold text-slate-400 mt-1">({metrics.totalTimeLossMinutes} minutos)</div>
+            </div>
+          </div>
+
+          {/* Time Loss by Cause Bar Chart */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs flex flex-col">
+            <h3 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2">
+              <BarChart2 className="h-4 w-4 text-slate-600" />
+              Pérdida de Tiempo por Causa (Horas)
+            </h3>
+            <div className="h-32 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={metrics.timeLossData} layout="vertical" margin={{ top: 0, right: 30, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+                  <XAxis type="number" hide />
+                  <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} width={80} tick={{ fontSize: 10, fill: '#64748b' }} />
+                  <Tooltip 
+                    formatter={(value: any) => [`${value} hrs`, 'Tiempo Perdido']}
+                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} 
+                  />
+                  <Bar dataKey="hours" radius={[0, 4, 4, 0]}>
+                    {metrics.timeLossData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={incidentColors[entry.name] || '#94a3b8'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Detailed Attendance & Personnel Table */}
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden mt-5">
         <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 bg-slate-50/50">
           <div>
             <h3 className="font-bold text-sm text-slate-800">Registro Individual de Asistencia y Novedades</h3>

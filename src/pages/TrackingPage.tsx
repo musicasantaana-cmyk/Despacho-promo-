@@ -10,6 +10,8 @@ export const TrackingPage: React.FC = () => {
   // Novedades Form
   const [incidentType, setIncidentType] = useState<IncidentType>('Retraso');
   const [incidentDesc, setIncidentDesc] = useState('');
+  const [incidentStartTime, setIncidentStartTime] = useState('');
+  const [incidentEndTime, setIncidentEndTime] = useState('');
 
   // Sort by date desc and filter by active group
   const sortedAssignments = useMemo(() => {
@@ -45,8 +47,15 @@ export const TrackingPage: React.FC = () => {
     e.preventDefault();
     if (!selectedAssignment || !incidentDesc) return;
     
-    addIncident(selectedAssignment.id, { type: incidentType, description: incidentDesc });
+    addIncident(selectedAssignment.id, { 
+      type: incidentType, 
+      description: incidentDesc,
+      startTime: incidentStartTime || undefined,
+      endTime: incidentEndTime || undefined
+    });
     setIncidentDesc('');
+    setIncidentStartTime('');
+    setIncidentEndTime('');
     
     // Refresh selected assignment from state to show new incident
     const updated = state.assignments.find(a => a.id === selectedAssignment.id);
@@ -227,12 +236,21 @@ export const TrackingPage: React.FC = () => {
                   {selectedAssignment.incidents.map(inc => (
                     <div key={inc.id} className="p-3 bg-red-50/50 border border-red-100 rounded-lg flex items-start space-x-3">
                       <AlertTriangle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-                      <div>
+                      <div className="flex-1">
                         <div className="flex items-center space-x-2">
-                          <span className="font-medium text-sm text-slate-800">{inc.type}</span>
-                          <span className="text-xs text-slate-500">{new Date(inc.timestamp).toLocaleString()}</span>
+                           <span className="font-medium text-sm text-slate-800">{inc.type}</span>
+                           <span className="text-xs text-slate-500">{new Date(inc.timestamp).toLocaleString()}</span>
                         </div>
                         <p className="text-sm text-slate-600 mt-1">{inc.description}</p>
+                        {(inc.startTime || inc.endTime) && (
+                          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-red-100 text-xs font-medium text-slate-600">
+                            <Clock className="h-3 w-3 text-slate-400" />
+                            <span>
+                              {inc.startTime ? `Desde: ${inc.startTime}` : 'Desde: N/A'}
+                              {inc.endTime ? ` — Hasta: ${inc.endTime}` : ' — Hasta: N/A'}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -266,7 +284,27 @@ export const TrackingPage: React.FC = () => {
                         className="w-full sm:flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
                       />
                     </div>
-                    <div className="flex justify-end">
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <div className="w-full sm:w-1/2 flex items-center space-x-2">
+                        <span className="text-xs text-slate-500 w-12 font-medium">Inicio:</span>
+                        <input 
+                          type="time" 
+                          value={incidentStartTime}
+                          onChange={e => setIncidentStartTime(e.target.value)}
+                          className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                        />
+                      </div>
+                      <div className="w-full sm:w-1/2 flex items-center space-x-2">
+                        <span className="text-xs text-slate-500 w-12 font-medium">Fin:</span>
+                        <input 
+                          type="time" 
+                          value={incidentEndTime}
+                          onChange={e => setIncidentEndTime(e.target.value)}
+                          className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex justify-end pt-2">
                       <button type="submit" className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors">
                         Guardar Novedad
                       </button>

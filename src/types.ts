@@ -48,6 +48,8 @@ export interface Incident {
   timestamp: string;
   type: IncidentType;
   description: string;
+  startTime?: string;
+  endTime?: string;
 }
 
 export interface Assignment {
