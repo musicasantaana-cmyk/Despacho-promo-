@@ -6,7 +6,7 @@ import {
   Layers, Search, Filter, Activity, Users, Shield
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
-import { Vehicle } from '../../types';
+import { ReportSubMenuHeader } from './ReportSubMenuHeader';
 
 export const FleetAssetsReportView: React.FC = () => {
   const { state } = useAppContext();
@@ -125,112 +125,59 @@ export const FleetAssetsReportView: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Top Filter Bar */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-4">
+      <ReportSubMenuHeader 
+        workGroups={state.workGroups}
+        selectedGroupIds={selectedGroupIds}
+        onToggleGroup={toggleGroupSelection}
+        onSelectAllGroups={selectAllGroups}
+        onExportCsv={handleExportFleet}
+      >
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="flex items-center space-x-3">
             <div className="h-10 w-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
               <Truck className="h-5 w-5" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-800">Activos y Disponibilidad de Flota</h2>
-              <p className="text-xs text-slate-500">Supervisión en tiempo real de vehículos, capacidad y estado operativo</p>
+              <p className="text-xs text-slate-500">Supervisión en tiempo real de vehículos</p>
             </div>
           </div>
 
-          <button
-            onClick={handleExportFleet}
-            className="flex items-center px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
-          >
-            <Download className="h-3.5 w-3.5 mr-1.5" />
-            Exportar Flota (CSV)
-          </button>
-        </div>
+          <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1 flex items-center">
+                <Filter className="h-3 w-3 mr-1 text-slate-400" /> Estado
+              </label>
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value as any)}
+                className="w-full sm:w-auto bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
+              >
+                <option value="all">Todos</option>
+                <option value="Operativo">Operativos</option>
+                <option value="in_route">En Ruta</option>
+                <option value="Inoperativo">Inoperativos</option>
+              </select>
+            </div>
 
-        {/* Filters Matrix */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          <div>
-            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1 flex items-center">
-              <Filter className="h-3 w-3 mr-1 text-slate-400" /> Estado de Vehículo
-            </label>
-            <select
-              value={statusFilter}
-              onChange={e => setStatusFilter(e.target.value as any)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-            >
-              <option value="all">Todos los Estados</option>
-              <option value="Operativo">Operativos (Total)</option>
-              <option value="in_route">En Ruta Activa (Despachados)</option>
-              <option value="Inoperativo">Inoperativos / En Taller</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1 flex items-center">
-              <Search className="h-3 w-3 mr-1 text-slate-400" /> Buscar Móvil / Placa
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                placeholder="Placa o N° interno..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-              />
-              <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+            <div>
+              <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1 flex items-center">
+                <Search className="h-3 w-3 mr-1 text-slate-400" /> Buscar
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Placa o interno..."
+                  value={searchTerm}
+                  onChange={e => setSearchTerm(e.target.value)}
+                  className="w-full sm:w-48 bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+                <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+              </div>
             </div>
           </div>
         </div>
-
-        {/* Group Selector Tags */}
-        <div className="pt-2 border-t border-slate-100">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center">
-              <Layers className="h-3 w-3 mr-1 text-slate-400" /> Filtrar por Grupo de Trabajo:
-            </span>
-            <button
-              onClick={selectAllGroups}
-              className={`text-[11px] font-semibold transition-colors ${
-                selectedGroupIds.length === 0 ? 'text-blue-600 font-bold' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              {selectedGroupIds.length === 0 ? '✓ Todos los grupos' : 'Seleccionar todos'}
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={selectAllGroups}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                selectedGroupIds.length === 0
-                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              Todos ({state.vehicles.length})
-            </button>
-            {state.workGroups.map(wg => {
-              const isSelected = selectedGroupIds.includes(wg.id);
-              const count = state.vehicles.filter(v => v.workGroupId === wg.id).length;
-              return (
-                <button
-                  key={wg.id}
-                  onClick={() => toggleGroupSelection(wg.id)}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-all flex items-center space-x-1.5 ${
-                    isSelected
-                      ? 'bg-slate-800 text-white border-slate-800 shadow-xs'
-                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <span>{wg.name}</span>
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-500'}`}>
-                    {count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+      </ReportSubMenuHeader>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">

@@ -12,10 +12,12 @@ import { AttendanceIncidentsReportView } from '../components/reports/AttendanceI
 import { FleetAssetsReportView } from '../components/reports/FleetAssetsReportView';
 import { CustomExportReportView } from '../components/reports/CustomExportReportView';
 
+import { ReportSubMenuHeader } from '../components/reports/ReportSubMenuHeader';
+
 type ReportSubTab = 'attendance' | 'fleet' | 'export_wizard' | 'general';
 
 export const ReportsPage: React.FC = () => {
-  const { state } = useAppContext();
+  const { state, setActiveWorkGroup } = useAppContext();
   const [activeTab, setActiveTab] = useState<ReportSubTab>('attendance');
   const [activeDetail, setActiveDetail] = useState<'asignadas' | 'novedades' | null>(null);
 
@@ -29,8 +31,12 @@ export const ReportsPage: React.FC = () => {
     const inProgress = relevantAssignments.filter(a => ['Salida de Base', 'Inicio de Ruta', 'Relleno'].includes(a.status)).length;
     
     let totalIncidents = 0;
+    let totalWeightTons = 0;
     relevantAssignments.forEach(a => {
       totalIncidents += a.incidents.length;
+      if (a.weightTons) {
+        totalWeightTons += a.weightTons;
+      }
     });
 
     const relevantVehicles = state.vehicles.filter(v => 
@@ -68,6 +74,7 @@ export const ReportsPage: React.FC = () => {
       completed,
       inProgress,
       totalIncidents,
+      totalWeightTons,
       relevantAssignments,
       totalVehicles,
       operationalVehicles,
@@ -90,7 +97,8 @@ export const ReportsPage: React.FC = () => {
         Destino: route?.destination || 'N/A',
         Vehiculo: vehicle?.plate || 'N/A',
         Estado: a.status,
-        Novedades: a.incidents.length
+        Novedades: a.incidents.length,
+        'Peso (Tons)': a.weightTons !== undefined ? a.weightTons : 'N/A'
       };
     });
     exportToCsv(`asignaciones_${state.activeWorkGroupId || 'general'}_${new Date().getTime()}.csv`, data);
@@ -110,68 +118,73 @@ export const ReportsPage: React.FC = () => {
 
   const tabs: { id: ReportSubTab; label: string; icon: React.ReactNode; badge?: string }[] = [
     {
-      id: 'attendance',
-      label: 'Asistencia y Novedades (Personal)',
-      icon: <Users className="h-4 w-4" />,
-      badge: `${state.employees.length} activos`
-    },
-    {
       id: 'fleet',
-      label: 'Activos de Operación (Vehículos)',
+      label: 'Flota Vehicular',
       icon: <Truck className="h-4 w-4" />,
       badge: `${state.vehicles.length} móviles`
     },
     {
-      id: 'export_wizard',
-      label: 'Descargar Informes (Configurable)',
-      icon: <FileSpreadsheet className="h-4 w-4" />
+      id: 'attendance',
+      label: 'Reporte de Personal',
+      icon: <Users className="h-4 w-4" />,
+      badge: `${state.employees.length} activos`
     },
     {
       id: 'general',
-      label: 'Resumen Global de Rutas',
+      label: 'Indicadores de Ruta',
       icon: <BarChart2 className="h-4 w-4" />
     },
+    {
+      id: 'export_wizard',
+      label: 'Reporte Customizado (+)',
+      icon: <Layers className="h-4 w-4" />
+    }
   ];
 
   return (
-    <div className="space-y-6">
-      {/* Sub-menu Navigation Tabs */}
-      <div className="bg-white p-2 rounded-2xl border border-slate-200 shadow-xs">
-        <div className="flex flex-wrap gap-2">
-          {tabs.map(tab => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center space-x-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${
-                  isActive
-                    ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/20'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                }`}
-              >
-                <span className={isActive ? 'text-amber-300' : 'text-slate-400'}>{tab.icon}</span>
-                <span>{tab.label}</span>
-                {tab.badge && (
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                    isActive ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'
-                  }`}>
-                    {tab.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+    <div className="space-y-0">
+      {/* Sub-menu Navigation Tabs (Excel Sheet Style) */}
+      <div className="bg-slate-100 pt-2 px-2 flex flex-wrap gap-1 border-b border-slate-300">
+        {tabs.map(tab => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all border-t border-x rounded-t-lg -mb-px relative z-10 ${
+                isActive
+                  ? 'bg-white text-emerald-700 border-slate-300 shadow-sm'
+                  : 'bg-transparent text-slate-500 border-transparent hover:bg-slate-200/50'
+              }`}
+            >
+              <span className={isActive ? 'text-emerald-500' : 'text-slate-400'}>{tab.icon}</span>
+              <span>{tab.label}</span>
+              {tab.badge && (
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ml-2 ${
+                  isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'
+                }`}>
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Render Sub-View */}
-      {activeTab === 'attendance' && <AttendanceIncidentsReportView />}
-      {activeTab === 'fleet' && <FleetAssetsReportView />}
-      {activeTab === 'export_wizard' && <CustomExportReportView />}
+      <div className="bg-white p-4 sm:p-6 rounded-b-2xl border-x border-b border-slate-300 shadow-sm min-h-[600px]">
+        {activeTab === 'attendance' && <AttendanceIncidentsReportView />}
+        {activeTab === 'fleet' && <FleetAssetsReportView />}
+        {activeTab === 'export_wizard' && <CustomExportReportView />}
 
-      {activeTab === 'general' && (
-        <div className="space-y-6">
+        {activeTab === 'general' && (
+          <div className="space-y-6">
+            <ReportSubMenuHeader 
+              workGroups={state.workGroups}
+              selectedGroupIds={state.activeWorkGroupId ? [state.activeWorkGroupId] : []}
+              onToggleGroup={(id) => setActiveWorkGroup(state.activeWorkGroupId === id ? null : id)}
+              onSelectAllGroups={() => setActiveWorkGroup(null)}
+            />
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-2xl border border-slate-200 shadow-sm gap-4">
             <div>
               <h2 className="text-lg font-semibold text-slate-800">Panel de Operaciones Global</h2>
@@ -207,6 +220,12 @@ export const ReportsPage: React.FC = () => {
               icon={<AlertTriangle className="h-6 w-6 text-emerald-600" />}
               bg="bg-amber-50"
               onClick={() => setActiveDetail('novedades')}
+            />
+            <MetricCard 
+              title="Peso Total (Tons)" 
+              value={metrics.totalWeightTons.toFixed(2)} 
+              icon={<Layers className="h-6 w-6 text-indigo-600" />}
+              bg="bg-indigo-50"
             />
           </div>
 
@@ -412,6 +431,7 @@ export const ReportsPage: React.FC = () => {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 };

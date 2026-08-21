@@ -6,6 +6,7 @@ import {
   Truck, CheckSquare, Square, Layers, Sparkles, Check
 } from 'lucide-react';
 import { Employee, Assignment, Incident, Vehicle } from '../../types';
+import { ReportSubMenuHeader } from './ReportSubMenuHeader';
 
 export const CustomExportReportView: React.FC = () => {
   const { state } = useAppContext();
@@ -140,6 +141,7 @@ export const CustomExportReportView: React.FC = () => {
               'Grupo de Trabajo': group?.name || 'General',
               'Personal Asignado': emps.map(e => `${e.name} (${e.role})`).join('; '),
               'Estado de Viaje': a.status,
+              'Peso de Ruta (Tons)': a.weightTons !== undefined ? a.weightTons : 'N/A',
             });
           });
         });
@@ -212,6 +214,7 @@ export const CustomExportReportView: React.FC = () => {
           'Estado Actual': a.status,
           'Total Novedades': a.incidents.length,
           'Total Tiempo Perdido (Minutos)': totalTimeLossMinutes > 0 ? totalTimeLossMinutes : 'N/A',
+          'Peso de Ruta (Tons)': a.weightTons !== undefined ? a.weightTons : 'N/A',
         });
       });
     return masterRows;
@@ -226,6 +229,14 @@ export const CustomExportReportView: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <ReportSubMenuHeader 
+        workGroups={state.workGroups}
+        selectedGroupIds={selectedGroups}
+        onToggleGroup={toggleGroup}
+        onSelectAllGroups={() => setSelectedGroups([])}
+        onExportCsv={handleDownload}
+      />
+
       {/* Configuration Box */}
       <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs space-y-6">
         <div>
@@ -318,7 +329,7 @@ export const CustomExportReportView: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2 border-t border-slate-100">
           {/* Roles selection */}
           {['attendance', 'incidents'].includes(reportType) && (
-            <div className="space-y-2">
+            <div className="space-y-2 col-span-full">
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center">
                 <Users className="h-3.5 w-3.5 mr-1.5 text-slate-400" />
                 3. Filtrar por Roles
@@ -344,40 +355,6 @@ export const CustomExportReportView: React.FC = () => {
               </div>
             </div>
           )}
-
-          {/* Groups selection */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center">
-                <Layers className="h-3.5 w-3.5 mr-1.5 text-slate-400" />
-                Grupos de Trabajo
-              </label>
-              <button
-                onClick={() => setSelectedGroups([])}
-                className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700"
-              >
-                {selectedGroups.length === 0 ? '✓ Todos los grupos' : 'Seleccionar todos'}
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto pr-1">
-              {state.workGroups.map(group => {
-                const isChecked = selectedGroups.includes(group.id);
-                return (
-                  <button
-                    key={group.id}
-                    onClick={() => toggleGroup(group.id)}
-                    className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
-                      isChecked 
-                        ? 'bg-slate-800 text-white border-slate-800' 
-                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                    }`}
-                  >
-                    <span>{group.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
         </div>
 
         {/* Action & Preview Summary */}

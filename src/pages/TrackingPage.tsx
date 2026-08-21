@@ -62,12 +62,41 @@ export const TrackingPage: React.FC = () => {
     if (updated) setSelectedAssignment(updated);
   };
 
+  const [showWeightModal, setShowWeightModal] = useState(false);
+  const [routeWeight, setRouteWeight] = useState('');
+  const [pendingStatusChange, setPendingStatusChange] = useState<AssignmentStatus | null>(null);
+
   const handleStatusChange = (status: Assignment['status']) => {
     if (!selectedAssignment) return;
-    updateAssignmentStatus(selectedAssignment.id, status);
+    
+    if (status === 'Fin de Ruta' && selectedAssignment.weightTons === undefined) {
+      setPendingStatusChange(status);
+      setShowWeightModal(true);
+      return;
+    }
+
+    executeStatusChange(status);
+  };
+
+  const executeStatusChange = (status: Assignment['status'], weightTons?: number) => {
+    if (!selectedAssignment) return;
+    updateAssignmentStatus(selectedAssignment.id, status, weightTons);
     
     const updated = state.assignments.find(a => a.id === selectedAssignment.id);
-    if (updated) setSelectedAssignment({ ...updated, status });
+    if (updated) setSelectedAssignment({ ...updated, status, weightTons: weightTons !== undefined ? weightTons : updated.weightTons });
+  };
+
+  const handleConfirmWeight = () => {
+    const weight = parseFloat(routeWeight);
+    if (!isNaN(weight) && pendingStatusChange) {
+      executeStatusChange(pendingStatusChange, weight);
+    } else if (pendingStatusChange) {
+      // If no valid weight but still confirms? Maybe require it.
+      if (!routeWeight) return; 
+    }
+    setShowWeightModal(false);
+    setRouteWeight('');
+    setPendingStatusChange(null);
   };
 
   return (
@@ -191,6 +220,14 @@ export const TrackingPage: React.FC = () => {
                     {state.routes.find(r => r.id === selectedAssignment.routeId)?.origin} &rarr; {state.routes.find(r => r.id === selectedAssignment.routeId)?.destination}
                   </span>
                 </div>
+                {selectedAssignment.weightTons !== undefined && (
+                  <div className="bg-white p-3 rounded-lg border border-slate-200 sm:col-span-2 flex items-center justify-between">
+                    <span className="block text-xs font-medium text-slate-500">Peso de Ruta Registrado</span>
+                    <span className="font-bold text-emerald-700 bg-emerald-100 px-3 py-1 rounded-lg">
+                      {selectedAssignment.weightTons} Tons
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -323,6 +360,59 @@ export const TrackingPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Weight Modal */}
+      {showWeightModal && (
+        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="font-bold text-slate-800">Finalizar Ruta</h3>
+              <button 
+                onClick={() => {
+                  setShowWeightModal(false);
+                  setPendingStatusChange(null);
+                  setRouteWeight('');
+                }}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <XCircle className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-sm text-slate-600 mb-4">Por favor, ingrese el peso total de la ruta en toneladas antes de finalizar.</p>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={routeWeight}
+                onChange={e => setRouteWeight(e.target.value)}
+                placeholder="Ej. 12.5"
+                className="w-full border border-slate-300 rounded-lg px-4 py-3 text-lg font-semibold text-slate-800 text-center focus:ring-2 focus:ring-emerald-500 outline-none mb-6"
+                autoFocus
+              />
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => {
+                    setShowWeightModal(false);
+                    setPendingStatusChange(null);
+                    setRouteWeight('');
+                  }}
+                  className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 px-4 rounded-xl hover:bg-slate-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleConfirmWeight}
+                  disabled={!routeWeight || isNaN(parseFloat(routeWeight))}
+                  className="flex-1 bg-emerald-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-emerald-500 transition-colors disabled:opacity-50"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
-import { AppState, Employee, EmployeeRole, Vehicle, RouteDef, Assignment, Incident, WorkGroup, CrewTemplate, SyncStatus } from '../types';
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { AppState, Employee, EmployeeRole, Vehicle, RouteDef, Assignment, Incident, WorkGroup, CrewTemplate, SyncStatus, Attendance } from '../types';
+import { db, auth } from '../lib/firebase';
+import { collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 
 interface AppContextProps {
   state: AppState;
@@ -24,8 +26,9 @@ interface AppContextProps {
   updateCrew: (id: string, crew: Partial<CrewTemplate>) => void;
   deleteCrew: (id: string) => void;
   addAssignment: (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => void;
-  updateAssignmentStatus: (id: string, status: Assignment['status']) => void;
+  updateAssignmentStatus: (id: string, status: Assignment['status'], weightTons?: number) => void;
   addIncident: (assignmentId: string, incident: Omit<Incident, 'id' | 'timestamp'>) => void;
+  saveAttendance: (attendance: Omit<Attendance, 'id'>) => void;
   setBackupEmail: (email: string) => void;
   triggerManualBackup: () => void;
 }
@@ -38,294 +41,132 @@ const defaultState: AppState = {
   routes: [],
   assignments: [],
   crews: [],
+  attendances: [],
   backupEmail: null,
   lastBackupDate: null,
 };
 
 const AppContext = createContext<AppContextProps | undefined>(undefined);
 
-const generateId = () => Math.random().toString(36).substring(2, 9);
-
-const getDeviceId = () => {
-  let id = localStorage.getItem('PROMODESPACHO_deviceId');
-  if (!id) {
-    id = 'DEV-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-    localStorage.setItem('PROMODESPACHO_deviceId', id);
-  }
-  return id;
-};
+const generateId = () => Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<AppState>(() => {
-    const saved = localStorage.getItem('PROMODESPACHO_data');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Ensure workGroups exists for legacy data
-        if (!parsed.workGroups) parsed.workGroups = [];
-        const clearedFlag = localStorage.getItem('PROMODESPACHO_cleared_personnel_v1');
-        if (!clearedFlag) {
-          parsed.employees = [];
-          localStorage.setItem('PROMODESPACHO_cleared_personnel_v1', 'true');
-        }
-        return parsed;
-      } catch (e) {
-        console.error('Failed to parse local data', e);
-      }
-    } else {
-      localStorage.setItem('PROMODESPACHO_cleared_personnel_v1', 'true');
-    }
-    return defaultState;
+    // Try to load active group from local storage to keep user preference
+    const active = localStorage.getItem('PROMO_ACTIVE_GROUP');
+    return { ...defaultState, activeWorkGroupId: active || null };
   });
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
-    isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    isOnline: true,
     isSyncing: false,
     lastSyncTime: null,
-    latencyInterval: 15, // 15 seconds heartbeat default
-    serverVersion: 1,
-    deviceId: getDeviceId(),
-    syncProtocol: 'HTTP-Gateway-Heartbeat-15s / BroadcastChannel',
+    latencyInterval: 0,
+    serverVersion: 2,
+    deviceId: 'FB-SYNC',
+    syncProtocol: 'Firestore Realtime',
   });
 
-  const localVersionRef = useRef<number>(1);
-  const isPushingRef = useRef<boolean>(false);
-  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
-
-  // BroadcastChannel for instant local inter-tab synchronization
   useEffect(() => {
-    try {
-      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        const channel = new BroadcastChannel('PROMODESPACHO_SYNC_BUS');
-        broadcastChannelRef.current = channel;
+    setSyncStatus(prev => ({ ...prev, isOnline: true }));
 
-        channel.onmessage = (event) => {
-          if (event.data && event.data.type === 'STATE_UPDATE' && event.data.deviceId !== getDeviceId()) {
-            console.log('[Sync Bus] Instant update from sister tab');
-            setState(event.data.state);
-            localVersionRef.current = event.data.version || (localVersionRef.current + 1);
-            setSyncStatus(prev => ({
-              ...prev,
-              lastSyncTime: new Date().toLocaleTimeString(),
-              serverVersion: localVersionRef.current,
-            }));
-          }
-        };
+    const unsubWorkGroups = onSnapshot(collection(db, 'workGroups'), snap => {
+      const docs = snap.docs.map(d => ({ ...d.data(), id: d.id } as WorkGroup));
+      setState(prev => {
+        let nextActive = prev.activeWorkGroupId;
+        if (!nextActive && docs.length > 0) nextActive = docs[0].id;
+        if (nextActive && !docs.find(g => g.id === nextActive)) nextActive = docs.length > 0 ? docs[0].id : null;
+        if (nextActive) localStorage.setItem('PROMO_ACTIVE_GROUP', nextActive);
+        return { ...prev, workGroups: docs, activeWorkGroupId: nextActive };
+      });
+      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+    }, (err) => console.error("Firestore error workGroups", err));
 
-        return () => {
-          channel.close();
-        };
-      }
-    } catch (err) {
-      console.warn('[Sync Bus] BroadcastChannel warning:', err);
-    }
-  }, []);
+    const unsubEmployees = onSnapshot(collection(db, 'employees'), snap => {
+      setState(prev => ({ ...prev, employees: snap.docs.map(d => ({ ...d.data(), id: d.id } as Employee)) }));
+      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+    }, (err) => console.error("Firestore error employees", err));
 
-  // Online / Offline listener
-  useEffect(() => {
-    const handleOnline = () => setSyncStatus(prev => ({ ...prev, isOnline: true }));
-    const handleOffline = () => setSyncStatus(prev => ({ ...prev, isOnline: false }));
+    const unsubVehicles = onSnapshot(collection(db, 'vehicles'), snap => {
+      setState(prev => ({ ...prev, vehicles: snap.docs.map(d => ({ ...d.data(), id: d.id } as Vehicle)) }));
+      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+    }, (err) => console.error("Firestore error vehicles", err));
 
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
+    const unsubRoutes = onSnapshot(collection(db, 'routes'), snap => {
+      setState(prev => ({ ...prev, routes: snap.docs.map(d => ({ ...d.data(), id: d.id } as RouteDef)) }));
+      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+    }, (err) => console.error("Firestore error routes", err));
+
+    const unsubAssignments = onSnapshot(collection(db, 'assignments'), snap => {
+      setState(prev => ({ ...prev, assignments: snap.docs.map(d => ({ ...d.data(), id: d.id } as Assignment)) }));
+      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+    }, (err) => console.error("Firestore error assignments", err));
+
+    const unsubCrews = onSnapshot(collection(db, 'crews'), snap => {
+      setState(prev => ({ ...prev, crews: snap.docs.map(d => ({ ...d.data(), id: d.id } as CrewTemplate)) }));
+      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+    }, (err) => console.error("Firestore error crews", err));
+
+    const unsubAttendances = onSnapshot(collection(db, 'attendances'), snap => {
+      setState(prev => ({ ...prev, attendances: snap.docs.map(d => ({ ...d.data(), id: d.id } as Attendance)) }));
+      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+    }, (err) => console.error("Firestore error attendances", err));
 
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
+      unsubWorkGroups(); unsubEmployees(); unsubVehicles(); unsubRoutes(); unsubAssignments(); unsubCrews(); unsubAttendances();
     };
   }, []);
 
-  // Helper to push state to Server Gateway
-  const pushStateToServer = useCallback(async (stateToPush: AppState) => {
-    if (isPushingRef.current) return;
-    try {
-      isPushingRef.current = true;
-      setSyncStatus(prev => ({ ...prev, isSyncing: true }));
-
-      const response = await fetch('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId: getDeviceId(),
-          clientVersion: localVersionRef.current,
-          state: stateToPush,
-          timestamp: Date.now(),
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        localVersionRef.current = data.version;
-        setSyncStatus(prev => ({
-          ...prev,
-          isSyncing: false,
-          isOnline: true,
-          lastSyncTime: new Date().toLocaleTimeString(),
-          serverVersion: data.version,
-        }));
-
-        if (broadcastChannelRef.current) {
-          broadcastChannelRef.current.postMessage({
-            type: 'STATE_UPDATE',
-            deviceId: getDeviceId(),
-            version: data.version,
-            state: stateToPush,
-          });
-        }
-      }
-    } catch (err) {
-      console.warn('[Sync Gateway] Push failed (working offline):', err);
-      setSyncStatus(prev => ({ ...prev, isSyncing: false }));
-    } finally {
-      isPushingRef.current = false;
-    }
-  }, []);
-
-  // Helper to pull from server
-  const fetchServerState = useCallback(async () => {
-    try {
-      setSyncStatus(prev => ({ ...prev, isSyncing: true }));
-      const res = await fetch('/api/sync');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.state) {
-          setState(data.state);
-          localVersionRef.current = data.version;
-          setSyncStatus(prev => ({
-            ...prev,
-            isSyncing: false,
-            isOnline: true,
-            lastSyncTime: new Date().toLocaleTimeString(),
-            serverVersion: data.version,
-          }));
-        }
-      }
-    } catch (err) {
-      console.warn('[Sync Gateway] Fetch failed:', err);
-      setSyncStatus(prev => ({ ...prev, isSyncing: false }));
-    }
-  }, []);
-
-  // 15-second Heartbeat Polling Protocol (Multi-device synchronizer)
-  useEffect(() => {
-    const checkServerHeartbeat = async () => {
-      if (isPushingRef.current) return;
-      try {
-        const statusRes = await fetch('/api/sync/status');
-        if (statusRes.ok) {
-          const status = await statusRes.json();
-          setSyncStatus(prev => ({ ...prev, isOnline: true }));
-          if (status.version > localVersionRef.current) {
-            console.log(`[Sync Gateway] Server newer version (${status.version} > ${localVersionRef.current}). Pulling...`);
-            const syncRes = await fetch('/api/sync');
-            if (syncRes.ok) {
-              const syncData = await syncRes.json();
-              if (syncData.state) {
-                setState(syncData.state);
-                localVersionRef.current = syncData.version;
-                setSyncStatus(prev => ({
-                  ...prev,
-                  lastSyncTime: new Date().toLocaleTimeString(),
-                  serverVersion: syncData.version,
-                }));
-              }
-            }
-          }
-        }
-      } catch (err) {
-        setSyncStatus(prev => ({ ...prev, isOnline: false }));
-      }
-    };
-
-    // Initial check on mount
-    checkServerHeartbeat();
-
-    // 15s timer
-    const intervalMs = (syncStatus.latencyInterval || 15) * 1000;
-    const heartbeatTimer = setInterval(checkServerHeartbeat, intervalMs);
-
-    return () => clearInterval(heartbeatTimer);
-  }, [syncStatus.latencyInterval]);
-
-  // Persist locally and trigger push debounce
-  useEffect(() => {
-    localStorage.setItem('PROMODESPACHO_data', JSON.stringify(state));
-    const timer = setTimeout(() => {
-      pushStateToServer(state);
-    }, 400);
-
-    return () => clearTimeout(timer);
-  }, [state, pushStateToServer]);
-
-  // Set Latency Interval
-  const setLatencyInterval = (seconds: number) => {
-    const validSec = Math.max(5, Math.min(120, seconds));
-    setSyncStatus(prev => ({ ...prev, latencyInterval: validSec }));
-  };
-
-  const syncNow = async () => {
-    await pushStateToServer(state);
-    await fetchServerState();
-  };
-
-  const triggerManualBackup = () => {
-    if (state.backupEmail) {
-      setState((prev) => ({
-        ...prev,
-        lastBackupDate: new Date().toISOString(),
-      }));
-    }
-    syncNow();
-  };
-
-  const addWorkGroup = (name: string) => {
-    const newGroup = { id: generateId(), name };
-    setState(prev => ({
-      ...prev,
-      workGroups: [...prev.workGroups, newGroup],
-      activeWorkGroupId: prev.activeWorkGroupId || newGroup.id
-    }));
-  };
-
-  const deleteWorkGroup = (id: string) => {
-    setState(prev => ({
-      ...prev,
-      workGroups: prev.workGroups.filter(g => g.id !== id),
-      activeWorkGroupId: prev.activeWorkGroupId === id ? (prev.workGroups.find(g => g.id !== id)?.id || null) : prev.activeWorkGroupId
-    }));
-  };
+  const syncNow = async () => {};
+  const setLatencyInterval = () => {};
+  const setBackupEmail = () => {};
+  const triggerManualBackup = () => {};
 
   const setActiveWorkGroup = (id: string) => {
+    localStorage.setItem('PROMO_ACTIVE_GROUP', id);
     setState(prev => ({ ...prev, activeWorkGroupId: id }));
   };
 
-  const addEmployee = (emp: Omit<Employee, 'id'>) => {
-    setState((prev) => ({
-      ...prev,
-      employees: [...prev.employees, { ...emp, id: generateId(), workGroupId: emp.workGroupId || prev.activeWorkGroupId || undefined }],
-    }));
+  const addWorkGroup = async (name: string) => {
+    try {
+      const docRef = doc(collection(db, 'workGroups'));
+      await setDoc(docRef, { name });
+      setActiveWorkGroup(docRef.id);
+    } catch (e) { console.error(e); }
   };
 
-  const updateEmployee = (id: string, emp: Partial<Employee>) => {
-    setState((prev) => ({
-      ...prev,
-      employees: prev.employees.map((e) => (e.id === id ? { ...e, ...emp } : e)),
-    }));
+  const deleteWorkGroup = async (id: string) => {
+    try { await deleteDoc(doc(db, 'workGroups', id)); } catch (e) { console.error(e); }
   };
 
-  const deleteEmployee = (id: string) => {
-    setState((prev) => ({ ...prev, employees: prev.employees.filter((e) => e.id !== id) }));
+  const addEmployee = async (emp: Omit<Employee, 'id'>) => {
+    try {
+      const docRef = doc(collection(db, 'employees'));
+      await setDoc(docRef, { ...emp, workGroupId: emp.workGroupId || state.activeWorkGroupId || '' });
+    } catch (e) { console.error(e); }
   };
 
-  const deleteAllEmployees = () => {
-    setState((prev) => ({ ...prev, employees: [] }));
+  const updateEmployee = async (id: string, emp: Partial<Employee>) => {
+    try { await updateDoc(doc(db, 'employees', id), emp); } catch (e) { console.error(e); }
   };
 
-  const importEmployeesBulk = (rawRows: any[]) => {
-    setState((prev) => {
-      let currentWorkGroups = [...prev.workGroups];
-      const newEmployees: Employee[] = [];
+  const deleteEmployee = async (id: string) => {
+    try { await deleteDoc(doc(db, 'employees', id)); } catch (e) { console.error(e); }
+  };
 
+  const deleteAllEmployees = async () => {
+    try {
+      const batch = writeBatch(db);
+      state.employees.forEach(e => batch.delete(doc(db, 'employees', e.id)));
+      await batch.commit();
+    } catch (e) { console.error(e); }
+  };
+
+  const importEmployeesBulk = async (rawRows: any[]) => {
+    try {
+      const batch = writeBatch(db);
+      let currentWorkGroups = [...state.workGroups];
+      
       const normalizeRole = (val: any): EmployeeRole => {
         const str = String(val || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
         if (str.includes('conduct') || str.includes('chofer') || str.includes('driver')) return 'Conductor';
@@ -334,7 +175,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return 'Conductor';
       };
 
-      rawRows.forEach((row) => {
+      for (const row of rawRows) {
         const lastName = String(row.apellido || row.apellidos || row.lastname || row.last_name || '').trim();
         const firstName = String(row.nombre || row.nombres || row.firstname || row.first_name || row.name || '').trim();
         const rawRole = row.roll || row.rol || row.cargo || row.puesto || row.funcion || row.role || '';
@@ -342,23 +183,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const phone = String(row.telefono || row.telefonos || row.celular || row.tel || row.phone || row.movil || '').trim();
         const rawGroup = String(row.grupo || row.grupos || row.group || row.area || row.zona || '').trim();
 
-        let assignedGroupId = prev.activeWorkGroupId || undefined;
+        let assignedGroupId = state.activeWorkGroupId || '';
 
         if (rawGroup) {
-          let foundGroup = currentWorkGroups.find(
-            (g) => g.name.trim().toLowerCase() === rawGroup.toLowerCase()
-          );
+          let foundGroup = currentWorkGroups.find(g => g.name.trim().toLowerCase() === rawGroup.toLowerCase());
           if (!foundGroup) {
-            foundGroup = { id: generateId(), name: rawGroup };
+            const wgRef = doc(collection(db, 'workGroups'));
+            foundGroup = { id: wgRef.id, name: rawGroup };
             currentWorkGroups.push(foundGroup);
+            batch.set(wgRef, { name: rawGroup });
           }
           assignedGroupId = foundGroup.id;
         }
 
         const fullName = `${firstName} ${lastName}`.trim() || firstName || lastName || 'Sin Nombre';
-
-        newEmployees.push({
-          id: generateId(),
+        const empRef = doc(collection(db, 'employees'));
+        batch.set(empRef, {
           name: fullName,
           firstName: firstName,
           lastName: lastName,
@@ -367,142 +207,131 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           workGroup: rawGroup,
           workGroupId: assignedGroupId,
         });
+      }
+      await batch.commit();
+    } catch (e) { console.error(e); }
+  };
+
+  const addVehicle = async (veh: Omit<Vehicle, 'id'>) => {
+    try {
+      const docRef = doc(collection(db, 'vehicles'));
+      await setDoc(docRef, { ...veh, workGroupId: veh.workGroupId || state.activeWorkGroupId || '' });
+    } catch (e) { console.error(e); }
+  };
+
+  const updateVehicle = async (id: string, veh: Partial<Vehicle>) => {
+    try { await updateDoc(doc(db, 'vehicles', id), veh); } catch (e) { console.error(e); }
+  };
+
+  const deleteVehicle = async (id: string) => {
+    try { await deleteDoc(doc(db, 'vehicles', id)); } catch (e) { console.error(e); }
+  };
+
+  const addRoute = async (route: Omit<RouteDef, 'id'>) => {
+    try {
+      const docRef = doc(collection(db, 'routes'));
+      await setDoc(docRef, { ...route, workGroupId: route.workGroupId || state.activeWorkGroupId || '' });
+    } catch (e) { console.error(e); }
+  };
+
+  const updateRoute = async (id: string, route: Partial<RouteDef>) => {
+    try { await updateDoc(doc(db, 'routes', id), route); } catch (e) { console.error(e); }
+  };
+
+  const deleteRoute = async (id: string) => {
+    try { await deleteDoc(doc(db, 'routes', id)); } catch (e) { console.error(e); }
+  };
+
+  const addCrew = async (crew: Omit<CrewTemplate, 'id'>) => {
+    try {
+      const docRef = doc(collection(db, 'crews'));
+      await setDoc(docRef, { ...crew, workGroupId: crew.workGroupId || state.activeWorkGroupId || '' });
+    } catch (e) { console.error(e); }
+  };
+
+  const updateCrew = async (id: string, crew: Partial<CrewTemplate>) => {
+    try { await updateDoc(doc(db, 'crews', id), crew); } catch (e) { console.error(e); }
+  };
+
+  const deleteCrew = async (id: string) => {
+    try { await deleteDoc(doc(db, 'crews', id)); } catch (e) { console.error(e); }
+  };
+
+  const addAssignment = async (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => {
+    try {
+      const docRef = doc(collection(db, 'assignments'));
+      await setDoc(docRef, {
+        ...assignment,
+        status: 'Pendiente',
+        incidents: [],
+        workGroupId: assignment.workGroupId || state.activeWorkGroupId || ''
       });
+    } catch (e) { console.error(e); }
+  };
 
-      const nextActiveGroupId = prev.activeWorkGroupId || (currentWorkGroups[0]?.id ?? null);
+  const updateAssignmentStatus = async (id: string, status: Assignment['status'], weightTons?: number) => {
+    try { 
+      const updateData: any = { status };
+      if (weightTons !== undefined) {
+        updateData.weightTons = weightTons;
+      }
+      await updateDoc(doc(db, 'assignments', id), updateData); 
+    } catch (e) { console.error(e); }
+  };
 
-      return {
-        ...prev,
-        workGroups: currentWorkGroups,
-        activeWorkGroupId: nextActiveGroupId,
-        employees: [...prev.employees, ...newEmployees],
+  const addIncident = async (assignmentId: string, incident: Omit<Incident, 'id' | 'timestamp'>) => {
+    try {
+      const assignment = state.assignments.find(a => a.id === assignmentId);
+      if (!assignment) return;
+      
+      const newIncident: Incident = {
+        ...incident,
+        id: generateId(),
+        timestamp: new Date().toISOString()
       };
-    });
+      
+      const updatedIncidents = [...assignment.incidents, newIncident];
+      await updateDoc(doc(db, 'assignments', assignmentId), { incidents: updatedIncidents });
+    } catch (e) { console.error(e); }
   };
 
-  const addVehicle = (veh: Omit<Vehicle, 'id'>) => {
-    setState((prev) => ({
-      ...prev,
-      vehicles: [...prev.vehicles, { ...veh, id: generateId(), workGroupId: veh.workGroupId || prev.activeWorkGroupId || undefined }],
-    }));
-  };
-
-  const updateVehicle = (id: string, veh: Partial<Vehicle>) => {
-    setState((prev) => ({
-      ...prev,
-      vehicles: prev.vehicles.map((v) => (v.id === id ? { ...v, ...veh } : v)),
-    }));
-  };
-
-  const deleteVehicle = (id: string) => {
-    setState((prev) => ({ ...prev, vehicles: prev.vehicles.filter((v) => v.id !== id) }));
-  };
-
-  const addRoute = (route: Omit<RouteDef, 'id'>) => {
-    setState((prev) => ({
-      ...prev,
-      routes: [...prev.routes, { ...route, id: generateId(), workGroupId: route.workGroupId || prev.activeWorkGroupId || undefined }],
-    }));
-  };
-
-  const updateRoute = (id: string, route: Partial<RouteDef>) => {
-    setState((prev) => ({
-      ...prev,
-      routes: prev.routes.map((r) => (r.id === id ? { ...r, ...route } : r)),
-    }));
-  };
-
-  const deleteRoute = (id: string) => {
-    setState((prev) => ({ ...prev, routes: prev.routes.filter((r) => r.id !== id) }));
-  };
-
-  const addCrew = (crew: Omit<CrewTemplate, 'id'>) => {
-    setState((prev) => ({
-      ...prev,
-      crews: [...(prev.crews || []), { ...crew, id: generateId(), workGroupId: prev.activeWorkGroupId || undefined }],
-    }));
-  };
-
-  const updateCrew = (id: string, crew: Partial<CrewTemplate>) => {
-    setState((prev) => ({
-      ...prev,
-      crews: (prev.crews || []).map((c) => (c.id === id ? { ...c, ...crew } : c)),
-    }));
-  };
-
-  const deleteCrew = (id: string) => {
-    setState((prev) => ({ ...prev, crews: (prev.crews || []).filter((c) => c.id !== id) }));
-  };
-
-  const addAssignment = (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => {
-    setState((prev) => ({
-      ...prev,
-      assignments: [
-        ...prev.assignments,
-        { ...assignment, id: generateId(), status: 'Pendiente', incidents: [], workGroupId: prev.activeWorkGroupId || undefined },
-      ],
-    }));
-  };
-
-  const updateAssignmentStatus = (id: string, status: Assignment['status']) => {
-    setState((prev) => ({
-      ...prev,
-      assignments: prev.assignments.map((a) => (a.id === id ? { ...a, status } : a)),
-    }));
-  };
-
-  const addIncident = (assignmentId: string, incident: Omit<Incident, 'id' | 'timestamp'>) => {
-    setState((prev) => ({
-      ...prev,
-      assignments: prev.assignments.map((a) =>
-        a.id === assignmentId
-          ? {
-              ...a,
-              incidents: [
-                ...a.incidents,
-                { ...incident, id: generateId(), timestamp: new Date().toISOString() },
-              ],
-            }
-          : a
-      ),
-    }));
-  };
-
-  const setBackupEmail = (email: string) => {
-    setState((prev) => ({ ...prev, backupEmail: email }));
+  const saveAttendance = async (attendance: Omit<Attendance, 'id'>) => {
+    try {
+      const docId = `${attendance.employeeId}_${attendance.date}`;
+      await setDoc(doc(db, 'attendances', docId), attendance);
+    } catch (e) { console.error(e); }
   };
 
   return (
-    <AppContext.Provider
-      value={{
-        state,
-        syncStatus,
-        syncNow,
-        setLatencyInterval,
-        addWorkGroup,
-        deleteWorkGroup,
-        setActiveWorkGroup,
-        addEmployee,
-        updateEmployee,
-        deleteEmployee,
-        deleteAllEmployees,
-        importEmployeesBulk,
-        addVehicle,
-        updateVehicle,
-        deleteVehicle,
-        addRoute,
-        updateRoute,
-        deleteRoute,
-        addCrew,
-        updateCrew,
-        deleteCrew,
-        addAssignment,
-        updateAssignmentStatus,
-        addIncident,
-        setBackupEmail,
-        triggerManualBackup,
-      }}
-    >
+    <AppContext.Provider value={{
+      state,
+      syncStatus,
+      syncNow,
+      setLatencyInterval,
+      addWorkGroup,
+      deleteWorkGroup,
+      setActiveWorkGroup,
+      addEmployee,
+      updateEmployee,
+      deleteEmployee,
+      deleteAllEmployees,
+      importEmployeesBulk,
+      addVehicle,
+      updateVehicle,
+      deleteVehicle,
+      addRoute,
+      updateRoute,
+      deleteRoute,
+      addCrew,
+      updateCrew,
+      deleteCrew,
+      addAssignment,
+      updateAssignmentStatus,
+      addIncident,
+      saveAttendance,
+      setBackupEmail,
+      triggerManualBackup,
+    }}>
       {children}
     </AppContext.Provider>
   );
@@ -510,8 +339,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
 export const useAppContext = () => {
   const context = useContext(AppContext);
-  if (context === undefined) {
-    throw new Error('useAppContext must be used within an AppProvider');
-  }
+  if (!context) throw new Error('useAppContext must be used within AppProvider');
   return context;
 };

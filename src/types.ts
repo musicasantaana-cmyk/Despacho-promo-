@@ -61,6 +61,7 @@ export interface Assignment {
   status: AssignmentStatus;
   incidents: Incident[];
   workGroupId?: string;
+  weightTons?: number;
 }
 
 export interface CrewTemplate {
@@ -73,6 +74,36 @@ export interface CrewTemplate {
   workGroupId?: string;
 }
 
+export type AttendanceStatus = 'OK' | 'RTM' | 'AUS' | 'PNR' | 'MED' | 'PRL' | 'ACC' | 'INC' | 'PXC' | 'FAM' | 'NDL' | 'SAN' | 'VAC' | 'LCL' | 'RETIRO' | 'TRASLADO' | 'VACANTES';
+
+export const NOVELTY_TYPES = [
+  { code: 'OK', label: 'OPERATIVOS (Trabajó sin novedad)' },
+  { code: 'RTM', label: 'RTM - RESTRICCIONES' },
+  { code: 'AUS', label: 'AUS - AUSENCIA SIN JUSTIFICAR' },
+  { code: 'PNR', label: 'PNR - PERMISO NO REMUNERADO' },
+  { code: 'MED', label: 'MED - PERMISO MEDICO' },
+  { code: 'PRL', label: 'PRL - PERMISO LABORAL' },
+  { code: 'ACC', label: 'ACC - INCAP. POR ACCIDENTE DE TRABAJO' },
+  { code: 'INC', label: 'INC - INCAP. POR ENFERMEDAD GENERAL' },
+  { code: 'PXC', label: 'PXC - PERMISO POR CALAMIDAD' },
+  { code: 'FAM', label: 'FAM - PERMISO POR DÍA DE LA FAMILIA' },
+  { code: 'NDL', label: 'NDL - NO DEBÍA LABORAR' },
+  { code: 'SAN', label: 'SAN - SANCIÓN' },
+  { code: 'VAC', label: 'VAC - VACACIONES' },
+  { code: 'LCL', label: 'LCL - LICENCIA DE LUTO' },
+  { code: 'RETIRO', label: 'RETIRO' },
+  { code: 'TRASLADO', label: 'TRASLADO' },
+  { code: 'VACANTES', label: 'VACANTES' }
+] as const;
+
+export interface Attendance {
+  id: string;
+  employeeId: string;
+  date: string; // YYYY-MM-DD format expected
+  status: AttendanceStatus;
+  workGroupId?: string;
+}
+
 export interface AppState {
   workGroups: WorkGroup[];
   activeWorkGroupId: string | null;
@@ -81,6 +112,7 @@ export interface AppState {
   routes: RouteDef[];
   assignments: Assignment[];
   crews: CrewTemplate[];
+  attendances: Attendance[];
   backupEmail: string | null;
   lastBackupDate: string | null;
 }
@@ -93,5 +125,12 @@ export interface SyncStatus {
   serverVersion: number;
   deviceId: string;
   syncProtocol: string;
+}
+
+export interface AppUser {
+  id: string;
+  username: string;
+  password?: string;
+  createdAt?: string;
 }
 

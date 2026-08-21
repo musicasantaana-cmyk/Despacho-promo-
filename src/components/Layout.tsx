@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Truck, Map, Activity, BarChart2, Settings, Cloud, X, Menu, Clock, Radio, RefreshCw, Smartphone } from 'lucide-react';
+import { Truck, Map, Activity, BarChart2, Settings, Cloud, X, Menu, Clock, Radio, RefreshCw, Smartphone, UserPlus, LogOut } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { exportToCsv } from '../utils/exportCsv';
 import { SyncStatusModal } from './SyncStatusModal';
 import { PromoambientalLogo, PromoEmblem } from './PromoambientalLogo';
+import { createAppUser } from '../lib/firebase';
 
 const DigitalClock = () => {
   const [time, setTime] = useState(new Date());
@@ -25,19 +26,51 @@ interface LayoutProps {
   children: React.ReactNode;
   currentView: string;
   onViewChange: (view: string) => void;
+  onLogout?: () => void;
 }
 
-export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewChange }) => {
+export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewChange, onLogout }) => {
   const { state, syncStatus, syncNow, setBackupEmail, triggerManualBackup, setActiveWorkGroup } = useAppContext();
   const [showSettings, setShowSettings] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [emailInput, setEmailInput] = useState(state.backupEmail || '');
 
+  // User creation state
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [creationStatus, setCreationStatus] = useState<{ type: 'idle' | 'success' | 'error', message: string }>({ type: 'idle', message: '' });
+
   const handleSaveSettings = () => {
     setBackupEmail(emailInput);
     setShowSettings(false);
   };
+  
+  const handleLogout = () => {
+    if (onLogout) {
+      onLogout();
+    } else {
+      localStorage.removeItem('PROMO_USER_SESSION');
+      window.location.reload();
+    }
+  };
+
+  const handleCreateUser = async () => {
+    if (!newUsername.trim() || !newPassword) {
+      setCreationStatus({ type: 'error', message: 'Llene ambos campos (usuario y contraseña).' });
+      return;
+    }
+    
+    const res = await createAppUser(newUsername, newPassword);
+    if (res.success) {
+      setCreationStatus({ type: 'success', message: res.message });
+      setNewUsername('');
+      setNewPassword('');
+    } else {
+      setCreationStatus({ type: 'error', message: res.message });
+    }
+  };
+
 
   const handleExportBackup = () => {
     const dataStr = JSON.stringify(state, null, 2);
@@ -138,6 +171,14 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
             <Settings className="h-4 w-4" />
             <span>Configuración</span>
           </button>
+          
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center space-x-3 px-4 py-2 mt-1 rounded-lg text-sm text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>Cerrar Sesión</span>
+          </button>
         </div>
       </aside>
 
@@ -223,7 +264,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="p-6 space-y-4">
+            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   Correo para copia de seguridad
@@ -233,19 +274,51 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
                   value={emailInput}
                   onChange={(e) => setEmailInput(e.target.value)}
                   placeholder="admin@empresa.com"
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
+                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-sm"
                 />
-                <p className="text-xs text-slate-500 mt-2">
-                  La aplicación sincronizará automáticamente los datos en segundo plano si se configura un correo.
-                </p>
               </div>
+
+              <div className="pt-4 border-t border-slate-100">
+                <h4 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2">
+                  <UserPlus className="h-4 w-4 text-emerald-600" />
+                  Crear Nuevo Usuario (Acceso)
+                </h4>
+                <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                  <input
+                    type="text"
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    placeholder="Nombre de Usuario"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Contraseña (mínimo 6 caracteres)"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
+                  {creationStatus.message && (
+                    <p className={`text-xs ${creationStatus.type === 'success' ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {creationStatus.message}
+                    </p>
+                  )}
+                  <button
+                    onClick={handleCreateUser}
+                    className="w-full py-2 px-4 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors font-medium text-sm text-center"
+                  >
+                    Crear Usuario
+                  </button>
+                </div>
+              </div>
+
               <div className="pt-4 border-t border-slate-100 flex flex-col space-y-3">
                 <button
                   onClick={() => { setShowSettings(false); setShowSyncModal(true); }}
                   className="w-full py-2 px-4 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors font-medium text-sm text-center flex items-center justify-center gap-2"
                 >
                   <Radio className="h-4 w-4" />
-                  Protocolo y Latencia Multi-Dispositivo (15s)
+                  Estado de Sincronización
                 </button>
                 <button
                   onClick={handleExportBackup}

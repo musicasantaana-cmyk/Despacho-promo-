@@ -1,0 +1,154 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} { 
+      allow read, write: if false; 
+    }
+
+    function isSignedIn() { 
+      return request.auth != null; 
+    }
+    
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isValidWorkGroup(data) {
+      return data.keys().hasOnly(['name']) &&
+             data.keys().size() >= 1 &&
+             data.name is string && data.name.size() <= 100;
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasOnly(['name', 'firstName', 'lastName', 'role', 'phone', 'workGroup', 'workGroupId']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.role in ['Conductor', 'Ayudante', 'Coordinador'] &&
+             data.phone is string && data.phone.size() <= 20 &&
+             data.get('workGroup', '') is string && data.get('workGroup', '').size() <= 100 &&
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
+             data.get('firstName', '') is string && data.get('firstName', '').size() <= 50 &&
+             data.get('lastName', '') is string && data.get('lastName', '').size() <= 50;
+    }
+
+    function isValidVehicle(data) {
+      return data.keys().hasOnly(['plate', 'internalNumber', 'capacity', 'status', 'workGroupId']) &&
+             data.plate is string && data.plate.size() <= 20 &&
+             data.internalNumber is string && data.internalNumber.size() <= 50 &&
+             data.capacity is number &&
+             data.status in ['Operativo', 'Inoperativo'] &&
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128;
+    }
+
+    function isValidRoute(data) {
+      return data.keys().hasOnly(['name', 'code', 'operatingDays', 'origin', 'destination', 'estimatedHours', 'workGroupId', 'firstName', 'lastName']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.code is string && data.code.size() <= 50 &&
+             data.operatingDays is list && data.operatingDays.size() <= 7 &&
+             data.origin is string && data.origin.size() <= 100 &&
+             data.destination is string && data.destination.size() <= 100 &&
+             data.estimatedHours is number &&
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
+             data.get('firstName', '') is string && data.get('firstName', '').size() <= 50 &&
+             data.get('lastName', '') is string && data.get('lastName', '').size() <= 50;
+    }
+
+    function isValidIncident(data) {
+      return data.keys().hasOnly(['id', 'timestamp', 'type', 'description', 'startTime', 'endTime']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.timestamp is string && data.timestamp.size() <= 50 &&
+             data.type in ['Retraso', 'Mecánico', 'Personal', 'Clima', 'Otro'] &&
+             data.description is string && data.description.size() <= 500 &&
+             data.get('startTime', '') is string && data.get('startTime', '').size() <= 50 &&
+             data.get('endTime', '') is string && data.get('endTime', '').size() <= 50;
+    }
+
+    function isValidAssignment(data) {
+      return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons']) &&
+             data.routeId is string && data.routeId.size() <= 128 &&
+             data.vehicleId is string && data.vehicleId.size() <= 128 &&
+             data.employeeIds is list && data.employeeIds.size() <= 10 &&
+             data.date is string && data.date.size() <= 50 &&
+             data.status in ['Pendiente', 'Salida de Base', 'Inicio de Ruta', 'Fin de Ruta', 'Relleno', 'Base', 'Cancelado'] &&
+             data.incidents is list && data.incidents.size() <= 50 &&
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
+             (data.get('weightTons', null) == null || data.get('weightTons', 0) is number);
+    }
+
+    function isValidCrew(data) {
+      return data.keys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.driverId is string && data.driverId.size() <= 128 &&
+             data.assistantIds is list && data.assistantIds.size() <= 5 &&
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
+             data.get('firstName', '') is string && data.get('firstName', '').size() <= 50 &&
+             data.get('lastName', '') is string && data.get('lastName', '').size() <= 50;
+    }
+
+    function isValidAppUser(data) {
+      return data.keys().hasOnly(['username', 'password', 'createdAt']) &&
+             data.username is string && data.username.size() <= 100 &&
+             data.password is string && data.password.size() <= 100 &&
+             data.get('createdAt', '') is string && data.get('createdAt', '').size() <= 100;
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasOnly(['employeeId', 'date', 'status', 'workGroupId']) &&
+             data.employeeId is string && data.employeeId.size() <= 128 &&
+             data.date is string && data.date.size() <= 20 &&
+             data.status in ['OK', 'RTM', 'AUS', 'PNR', 'MED', 'PRL', 'ACC', 'INC', 'PXC', 'FAM', 'NDL', 'SAN', 'VAC', 'LCL', 'RETIRO', 'TRASLADO', 'VACANTES'] &&
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128;
+    }
+
+    match /workGroups/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidWorkGroup(incoming());
+      allow update: if isValidId(id) && isValidWorkGroup(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['name']);
+      allow delete: if isValidId(id);
+    }
+    match /employees/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidEmployee(incoming());
+      allow update: if isValidId(id) && isValidEmployee(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'firstName', 'lastName', 'role', 'phone', 'workGroup', 'workGroupId']);
+      allow delete: if isValidId(id);
+    }
+    match /vehicles/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidVehicle(incoming());
+      allow update: if isValidId(id) && isValidVehicle(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['plate', 'internalNumber', 'capacity', 'status', 'workGroupId']);
+      allow delete: if isValidId(id);
+    }
+    match /routes/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidRoute(incoming());
+      allow update: if isValidId(id) && isValidRoute(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'operatingDays', 'origin', 'destination', 'estimatedHours', 'workGroupId', 'firstName', 'lastName']);
+      allow delete: if isValidId(id);
+    }
+    match /assignments/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidAssignment(incoming());
+      allow update: if isValidId(id) && isValidAssignment(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons']);
+      allow delete: if isValidId(id);
+    }
+    match /crews/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidCrew(incoming());
+      allow update: if isValidId(id) && isValidCrew(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']);
+      allow delete: if isValidId(id);
+    }
+    match /app_users/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidAppUser(incoming());
+      allow update: if isValidId(id) && isValidAppUser(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['username', 'password', 'createdAt']);
+      allow delete: if isValidId(id);
+    }
+    match /attendances/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidAttendance(incoming());
+      allow update: if isValidId(id) && isValidAttendance(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['employeeId', 'date', 'status', 'workGroupId']);
+      allow delete: if isValidId(id);
+    }
+  }
+}
