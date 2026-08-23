@@ -75,6 +75,7 @@ export const TrackingPage: React.FC = () => {
   const sortedAssignments = useMemo(() => {
     return [...state.assignments]
       .filter(a => !state.activeWorkGroupId || a.workGroupId === state.activeWorkGroupId)
+      .filter(a => a.status !== 'Base' && a.status !== 'Cancelado')
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [state.assignments, state.activeWorkGroupId]);
 
@@ -83,13 +84,20 @@ export const TrackingPage: React.FC = () => {
     return state.assignments.find(a => a.id === selectedAssignmentId) || null;
   }, [state.assignments, selectedAssignmentId]);
 
-  const metrics = useMemo(() => ({
-    salida: sortedAssignments.filter(a => a.status === 'Salida de Base').length,
-    inicio: sortedAssignments.filter(a => a.status === 'Inicio de Ruta').length,
-    fin: sortedAssignments.filter(a => a.status === 'Fin de Ruta').length,
-    relleno: sortedAssignments.filter(a => a.status === 'Relleno').length,
-    base: sortedAssignments.filter(a => a.status === 'Base').length,
-  }), [sortedAssignments]);
+  const metrics = useMemo(() => {
+    const todayStr = toLocalDatetimeValue(new Date()).slice(0, 10);
+    const todayGroupAssignments = state.assignments.filter(a => 
+      (!state.activeWorkGroupId || a.workGroupId === state.activeWorkGroupId) &&
+      a.date.startsWith(todayStr)
+    );
+    return {
+      salida: todayGroupAssignments.filter(a => a.status === 'Salida de Base').length,
+      inicio: todayGroupAssignments.filter(a => a.status === 'Inicio de Ruta').length,
+      fin: todayGroupAssignments.filter(a => a.status === 'Fin de Ruta').length,
+      relleno: todayGroupAssignments.filter(a => a.status === 'Relleno').length,
+      base: todayGroupAssignments.filter(a => a.status === 'Base').length,
+    };
+  }, [state.assignments, state.activeWorkGroupId]);
 
   // Available employees / vehicles for this group (for edit modal)
   const groupVehicles = useMemo(() =>
@@ -129,6 +137,9 @@ export const TrackingPage: React.FC = () => {
     setShowStatusModal(false);
     setPendingStatus(null);
     setWeightInput('');
+    if (pendingStatus === 'Base' || pendingStatus === 'Cancelado') {
+      setSelectedAssignmentId(null);
+    }
   };
 
   // ── Open edit resources modal ──────────────────────────────────────────────
