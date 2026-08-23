@@ -291,22 +291,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addAssignment = async (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => {
     try {
+      const nowIso = new Date().toISOString();
+      const createdAt = assignment.date || nowIso;
       const docRef = doc(collection(db, 'assignments'));
       await setDoc(docRef, {
         ...assignment,
         status: 'Pendiente',
         incidents: [],
-        workGroupId: assignment.workGroupId || state.activeWorkGroupId || ''
+        workGroupId: assignment.workGroupId || state.activeWorkGroupId || '',
+        createdAt: createdAt,
+        statusHistory: [
+          { status: 'Pendiente', timestamp: createdAt }
+        ]
       });
     } catch (e) { console.error(e); }
   };
 
   const updateAssignmentStatus = async (id: string, status: Assignment['status'], weightTons?: number) => {
     try { 
+      const assignment = state.assignments.find(a => a.id === id);
+      const nowIso = new Date().toISOString();
       const updateData: any = { status };
       if (weightTons !== undefined) {
         updateData.weightTons = weightTons;
       }
+
+      // Timestamp for operational phase tracking
+      if (status === 'Salida de Base' && !assignment?.salidaBaseAt) updateData.salidaBaseAt = nowIso;
+      if (status === 'Inicio de Ruta' && !assignment?.inicioRutaAt) updateData.inicioRutaAt = nowIso;
+      if (status === 'Fin de Ruta' && !assignment?.finRutaAt) updateData.finRutaAt = nowIso;
+      if (status === 'Base' && !assignment?.llegadaBaseAt) updateData.llegadaBaseAt = nowIso;
+
+      const currentHistory = assignment?.statusHistory || [];
+      updateData.statusHistory = [...currentHistory, { status, timestamp: nowIso }];
+
       await updateDoc(doc(db, 'assignments', id), updateData); 
     } catch (e) { console.error(e); }
   };

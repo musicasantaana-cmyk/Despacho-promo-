@@ -52,6 +52,11 @@ export interface Incident {
   endTime?: string;
 }
 
+export interface StatusHistoryItem {
+  status: AssignmentStatus;
+  timestamp: string;
+}
+
 export interface Assignment {
   id: string;
   routeId: string;
@@ -62,6 +67,12 @@ export interface Assignment {
   incidents: Incident[];
   workGroupId?: string;
   weightTons?: number;
+  statusHistory?: StatusHistoryItem[];
+  createdAt?: string;
+  salidaBaseAt?: string;
+  inicioRutaAt?: string;
+  finRutaAt?: string;
+  llegadaBaseAt?: string;
 }
 
 export interface CrewTemplate {
