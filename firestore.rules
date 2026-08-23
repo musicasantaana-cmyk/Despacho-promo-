@@ -66,7 +66,7 @@ service cloud.firestore {
     }
 
     function isValidAssignment(data) {
-      return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons']) &&
+      return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
              data.routeId is string && data.routeId.size() <= 128 &&
              data.vehicleId is string && data.vehicleId.size() <= 128 &&
              data.employeeIds is list && data.employeeIds.size() <= 10 &&
@@ -129,7 +129,7 @@ service cloud.firestore {
     match /assignments/{id} {
       allow read: if true;
       allow create: if isValidId(id) && isValidAssignment(incoming());
-      allow update: if isValidId(id) && isValidAssignment(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons']);
+      allow update: if isValidId(id) && isValidAssignment(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']);
       allow delete: if isValidId(id);
     }
     match /crews/{id} {

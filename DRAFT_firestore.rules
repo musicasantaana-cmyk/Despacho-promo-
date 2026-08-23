@@ -66,14 +66,15 @@ service cloud.firestore {
     }
 
     function isValidAssignment(data) {
-      return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId']) &&
+      return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
              data.routeId is string && data.routeId.size() <= 128 &&
              data.vehicleId is string && data.vehicleId.size() <= 128 &&
              data.employeeIds is list && data.employeeIds.size() <= 10 &&
              data.date is string && data.date.size() <= 50 &&
              data.status in ['Pendiente', 'Salida de Base', 'Inicio de Ruta', 'Fin de Ruta', 'Relleno', 'Base', 'Cancelado'] &&
              data.incidents is list && data.incidents.size() <= 50 &&
-             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128;
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
+             (data.get('weightTons', null) == null || data.get('weightTons', 0) is number);
     }
 
     function isValidCrew(data) {
@@ -113,7 +114,7 @@ service cloud.firestore {
     match /assignments/{id} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && isValidId(id) && isValidAssignment(incoming());
-      allow update: if isSignedIn() && isValidId(id) && isValidAssignment(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId']);
+      allow update: if isSignedIn() && isValidId(id) && isValidAssignment(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']);
       allow delete: if isSignedIn() && isValidId(id);
     }
     match /crews/{id} {
