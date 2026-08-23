@@ -106,7 +106,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, (err) => console.error("Firestore error routes", err));
 
     const unsubAssignments = onSnapshot(collection(db, 'assignments'), snap => {
-      setState(prev => ({ ...prev, assignments: snap.docs.map(d => ({ ...d.data(), id: d.id } as Assignment)) }));
+      setState(prev => ({ ...prev, assignments: snap.docs.map(d => {
+        const data = d.data();
+        let finalData = { ...data, id: d.id } as Assignment;
+        const metaIncident = finalData.incidents?.find(i => i.id === 'SYS_META');
+        if (metaIncident) {
+          try {
+            const meta = JSON.parse(metaIncident.description);
+            finalData = { ...finalData, ...meta, incidents: finalData.incidents.filter(i => i.id !== 'SYS_META') };
+          } catch(e) {}
+        }
+        return finalData;
+      }) }));
       setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
     }, (err) => console.error("Firestore error assignments", err));
 
@@ -294,16 +305,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const nowIso = new Date().toISOString();
       const createdAt = assignment.date || nowIso;
+      
+      const meta = {
+        createdAt,
+        statusHistory: [{ status: 'Pendiente', timestamp: createdAt }]
+      };
+
+      const metaIncident: Incident = {
+        id: 'SYS_META',
+        timestamp: nowIso,
+        type: 'Otro',
+        description: JSON.stringify(meta),
+        startTime: '',
+        endTime: ''
+      };
+
       const docRef = doc(collection(db, 'assignments'));
       await setDoc(docRef, {
-        ...assignment,
+        routeId: assignment.routeId,
+        vehicleId: assignment.vehicleId,
+        employeeIds: assignment.employeeIds,
+        date: assignment.date,
         status: 'Pendiente',
-        incidents: [],
+        incidents: [metaIncident],
         workGroupId: assignment.workGroupId || state.activeWorkGroupId || '',
-        createdAt: createdAt,
-        statusHistory: [
-          { status: 'Pendiente', timestamp: createdAt }
-        ]
+        weightTons: assignment.weightTons || 0
       });
     } catch (e) { console.error(e); }
   };
@@ -317,14 +343,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateData.weightTons = weightTons;
       }
 
-      // Timestamp for operational phase tracking (use custom timestamp if provided)
-      if (status === 'Salida de Base') updateData.salidaBaseAt = tsIso;
-      if (status === 'Inicio de Ruta') updateData.inicioRutaAt = tsIso;
-      if (status === 'Fin de Ruta') updateData.finRutaAt = tsIso;
-      if (status === 'Base') updateData.llegadaBaseAt = tsIso;
+      const meta: any = {
+        salidaBaseAt: assignment?.salidaBaseAt,
+        inicioRutaAt: assignment?.inicioRutaAt,
+        finRutaAt: assignment?.finRutaAt,
+        llegadaBaseAt: assignment?.llegadaBaseAt,
+        createdAt: assignment?.createdAt,
+      };
+
+      if (status === 'Salida de Base') meta.salidaBaseAt = tsIso;
+      if (status === 'Inicio de Ruta') meta.inicioRutaAt = tsIso;
+      if (status === 'Fin de Ruta') meta.finRutaAt = tsIso;
+      if (status === 'Base') meta.llegadaBaseAt = tsIso;
 
       const currentHistory = assignment?.statusHistory || [];
-      updateData.statusHistory = [...currentHistory, { status, timestamp: tsIso }];
+      meta.statusHistory = [...currentHistory, { status, timestamp: tsIso }];
+
+      const metaIncident: Incident = {
+        id: 'SYS_META',
+        timestamp: tsIso,
+        type: 'Otro',
+        description: JSON.stringify(meta),
+        startTime: '',
+        endTime: ''
+      };
+
+      const baseIncidents = (assignment?.incidents || []).filter(i => i.id !== 'SYS_META');
+      updateData.incidents = [...baseIncidents, metaIncident];
 
       await updateDoc(doc(db, 'assignments', id), updateData); 
     } catch (e) { console.error(e); }
@@ -338,18 +383,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (updates.vehicleId !== undefined) updateData.vehicleId = updates.vehicleId;
       if (updates.employeeIds !== undefined) updateData.employeeIds = updates.employeeIds;
       if (updates.statusTimestamps) {
-        // Rebuild status history preserving order but with updated timestamps
+        const meta: any = {
+          salidaBaseAt: assignment.salidaBaseAt,
+          inicioRutaAt: assignment.inicioRutaAt,
+          finRutaAt: assignment.finRutaAt,
+          llegadaBaseAt: assignment.llegadaBaseAt,
+          createdAt: assignment.createdAt,
+        };
+
         const newHistory = (assignment.statusHistory || []).map(h => ({
           ...h,
           timestamp: updates.statusTimestamps![h.status] || h.timestamp
         }));
-        updateData.statusHistory = newHistory;
-        // Also update the phase timestamp fields
-        if (updates.statusTimestamps['Salida de Base']) updateData.salidaBaseAt = new Date(updates.statusTimestamps['Salida de Base']).toISOString();
-        if (updates.statusTimestamps['Inicio de Ruta']) updateData.inicioRutaAt = new Date(updates.statusTimestamps['Inicio de Ruta']).toISOString();
-        if (updates.statusTimestamps['Fin de Ruta']) updateData.finRutaAt = new Date(updates.statusTimestamps['Fin de Ruta']).toISOString();
-        if (updates.statusTimestamps['Base']) updateData.llegadaBaseAt = new Date(updates.statusTimestamps['Base']).toISOString();
-        if (updates.statusTimestamps['Pendiente']) updateData.createdAt = new Date(updates.statusTimestamps['Pendiente']).toISOString();
+        meta.statusHistory = newHistory;
+
+        if (updates.statusTimestamps['Salida de Base']) meta.salidaBaseAt = new Date(updates.statusTimestamps['Salida de Base']).toISOString();
+        if (updates.statusTimestamps['Inicio de Ruta']) meta.inicioRutaAt = new Date(updates.statusTimestamps['Inicio de Ruta']).toISOString();
+        if (updates.statusTimestamps['Fin de Ruta']) meta.finRutaAt = new Date(updates.statusTimestamps['Fin de Ruta']).toISOString();
+        if (updates.statusTimestamps['Base']) meta.llegadaBaseAt = new Date(updates.statusTimestamps['Base']).toISOString();
+        if (updates.statusTimestamps['Pendiente']) meta.createdAt = new Date(updates.statusTimestamps['Pendiente']).toISOString();
+
+        const metaIncident: Incident = {
+          id: 'SYS_META',
+          timestamp: new Date().toISOString(),
+          type: 'Otro',
+          description: JSON.stringify(meta),
+          startTime: '',
+          endTime: ''
+        };
+        const baseIncidents = (assignment.incidents || []).filter(i => i.id !== 'SYS_META');
+        updateData.incidents = [...baseIncidents, metaIncident];
       }
       await updateDoc(doc(db, 'assignments', id), updateData);
     } catch (e) { console.error(e); }
@@ -366,7 +429,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         timestamp: new Date().toISOString()
       };
       
-      const updatedIncidents = [...assignment.incidents, newIncident];
+      const meta: any = {
+        salidaBaseAt: assignment.salidaBaseAt,
+        inicioRutaAt: assignment.inicioRutaAt,
+        finRutaAt: assignment.finRutaAt,
+        llegadaBaseAt: assignment.llegadaBaseAt,
+        createdAt: assignment.createdAt,
+        statusHistory: assignment.statusHistory
+      };
+
+      const metaIncident: Incident = {
+        id: 'SYS_META',
+        timestamp: new Date().toISOString(),
+        type: 'Otro',
+        description: JSON.stringify(meta),
+        startTime: '',
+        endTime: ''
+      };
+
+      const updatedIncidents = [...(assignment.incidents || []), newIncident, metaIncident];
       await updateDoc(doc(db, 'assignments', assignmentId), { incidents: updatedIncidents });
     } catch (e) { console.error(e); }
   };
