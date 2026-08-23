@@ -26,7 +26,8 @@ interface AppContextProps {
   updateCrew: (id: string, crew: Partial<CrewTemplate>) => Promise<void>;
   deleteCrew: (id: string) => Promise<void>;
   addAssignment: (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => Promise<void>;
-  updateAssignmentStatus: (id: string, status: Assignment['status'], weightTons?: number) => Promise<void>;
+  updateAssignmentStatus: (id: string, status: Assignment['status'], weightTons?: number, customTimestamp?: string) => Promise<void>;
+  updateAssignmentResources: (id: string, updates: { vehicleId?: string; employeeIds?: string[]; statusTimestamps?: Record<string, string> }) => Promise<void>;
   addIncident: (assignmentId: string, incident: Omit<Incident, 'id' | 'timestamp'>) => Promise<void>;
   saveAttendance: (attendance: Omit<Attendance, 'id'>) => Promise<void>;
   setBackupEmail: (email: string) => void;
@@ -307,25 +308,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) { console.error(e); }
   };
 
-  const updateAssignmentStatus = async (id: string, status: Assignment['status'], weightTons?: number) => {
+  const updateAssignmentStatus = async (id: string, status: Assignment['status'], weightTons?: number, customTimestamp?: string) => {
     try { 
       const assignment = state.assignments.find(a => a.id === id);
-      const nowIso = new Date().toISOString();
+      const tsIso = customTimestamp ? new Date(customTimestamp).toISOString() : new Date().toISOString();
       const updateData: any = { status };
       if (weightTons !== undefined) {
         updateData.weightTons = weightTons;
       }
 
-      // Timestamp for operational phase tracking
-      if (status === 'Salida de Base' && !assignment?.salidaBaseAt) updateData.salidaBaseAt = nowIso;
-      if (status === 'Inicio de Ruta' && !assignment?.inicioRutaAt) updateData.inicioRutaAt = nowIso;
-      if (status === 'Fin de Ruta' && !assignment?.finRutaAt) updateData.finRutaAt = nowIso;
-      if (status === 'Base' && !assignment?.llegadaBaseAt) updateData.llegadaBaseAt = nowIso;
+      // Timestamp for operational phase tracking (use custom timestamp if provided)
+      if (status === 'Salida de Base') updateData.salidaBaseAt = tsIso;
+      if (status === 'Inicio de Ruta') updateData.inicioRutaAt = tsIso;
+      if (status === 'Fin de Ruta') updateData.finRutaAt = tsIso;
+      if (status === 'Base') updateData.llegadaBaseAt = tsIso;
 
       const currentHistory = assignment?.statusHistory || [];
-      updateData.statusHistory = [...currentHistory, { status, timestamp: nowIso }];
+      updateData.statusHistory = [...currentHistory, { status, timestamp: tsIso }];
 
       await updateDoc(doc(db, 'assignments', id), updateData); 
+    } catch (e) { console.error(e); }
+  };
+
+  const updateAssignmentResources = async (id: string, updates: { vehicleId?: string; employeeIds?: string[]; statusTimestamps?: Record<string, string> }) => {
+    try {
+      const assignment = state.assignments.find(a => a.id === id);
+      if (!assignment) return;
+      const updateData: any = {};
+      if (updates.vehicleId !== undefined) updateData.vehicleId = updates.vehicleId;
+      if (updates.employeeIds !== undefined) updateData.employeeIds = updates.employeeIds;
+      if (updates.statusTimestamps) {
+        // Rebuild status history preserving order but with updated timestamps
+        const newHistory = (assignment.statusHistory || []).map(h => ({
+          ...h,
+          timestamp: updates.statusTimestamps![h.status] || h.timestamp
+        }));
+        updateData.statusHistory = newHistory;
+        // Also update the phase timestamp fields
+        if (updates.statusTimestamps['Salida de Base']) updateData.salidaBaseAt = new Date(updates.statusTimestamps['Salida de Base']).toISOString();
+        if (updates.statusTimestamps['Inicio de Ruta']) updateData.inicioRutaAt = new Date(updates.statusTimestamps['Inicio de Ruta']).toISOString();
+        if (updates.statusTimestamps['Fin de Ruta']) updateData.finRutaAt = new Date(updates.statusTimestamps['Fin de Ruta']).toISOString();
+        if (updates.statusTimestamps['Base']) updateData.llegadaBaseAt = new Date(updates.statusTimestamps['Base']).toISOString();
+        if (updates.statusTimestamps['Pendiente']) updateData.createdAt = new Date(updates.statusTimestamps['Pendiente']).toISOString();
+      }
+      await updateDoc(doc(db, 'assignments', id), updateData);
     } catch (e) { console.error(e); }
   };
 
@@ -377,6 +403,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteCrew,
       addAssignment,
       updateAssignmentStatus,
+      updateAssignmentResources,
       addIncident,
       saveAttendance,
       setBackupEmail,
