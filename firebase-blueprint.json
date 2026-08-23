@@ -1,0 +1,124 @@
+{
+  "entities": {
+    "WorkGroup": {
+      "title": "WorkGroup",
+      "description": "A group of operators and vehicles.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["name"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "An employee (driver, assistant, or coordinator).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "firstName": { "type": "string", "maxLength": 50 },
+        "lastName": { "type": "string", "maxLength": 50 },
+        "role": { "type": "string", "enum": ["Conductor", "Ayudante", "Coordinador"] },
+        "phone": { "type": "string", "maxLength": 20 },
+        "workGroup": { "type": "string", "maxLength": 100 },
+        "workGroupId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["name", "role", "phone"]
+    },
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "A vehicle in the fleet.",
+      "type": "object",
+      "properties": {
+        "plate": { "type": "string", "maxLength": 20 },
+        "internalNumber": { "type": "string", "maxLength": 50 },
+        "capacity": { "type": "number" },
+        "status": { "type": "string", "enum": ["Operativo", "Inoperativo"] },
+        "workGroupId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["plate", "internalNumber", "capacity", "status"]
+    },
+    "RouteDef": {
+      "title": "RouteDef",
+      "description": "A predefined route.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "code": { "type": "string", "maxLength": 50 },
+        "operatingDays": { "type": "array" },
+        "origin": { "type": "string", "maxLength": 100 },
+        "destination": { "type": "string", "maxLength": 100 },
+        "estimatedHours": { "type": "number" },
+        "workGroupId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["name", "code", "origin", "destination", "estimatedHours"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "A scheduled route for a vehicle and crew.",
+      "type": "object",
+      "properties": {
+        "routeId": { "type": "string", "maxLength": 128 },
+        "vehicleId": { "type": "string", "maxLength": 128 },
+        "employeeIds": { "type": "array" },
+        "date": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["Pendiente", "Salida de Base", "Inicio de Ruta", "Fin de Ruta", "Relleno", "Base", "Cancelado"] },
+        "incidents": { "type": "array" },
+        "workGroupId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["routeId", "vehicleId", "employeeIds", "date", "status"]
+    },
+    "CrewTemplate": {
+      "title": "CrewTemplate",
+      "description": "A predefined crew template.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "driverId": { "type": "string", "maxLength": 128 },
+        "assistantIds": { "type": "array" },
+        "workGroupId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["name", "driverId", "assistantIds"]
+    },
+    "AppUser": {
+      "title": "AppUser",
+      "description": "An application user with username and password.",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "maxLength": 100 },
+        "password": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["username", "password"]
+    }
+  },
+  "firestore": {
+    "workGroups": {
+      "schema": "WorkGroup",
+      "description": "Stores work groups."
+    },
+    "employees": {
+      "schema": "Employee",
+      "description": "Stores employees."
+    },
+    "vehicles": {
+      "schema": "Vehicle",
+      "description": "Stores vehicles."
+    },
+    "routes": {
+      "schema": "RouteDef",
+      "description": "Stores route definitions."
+    },
+    "assignments": {
+      "schema": "Assignment",
+      "description": "Stores assignments."
+    },
+    "crews": {
+      "schema": "CrewTemplate",
+      "description": "Stores crew templates."
+    },
+    "app_users": {
+      "schema": "AppUser",
+      "description": "Stores authorized application users."
+    }
+  }
+}
