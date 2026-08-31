@@ -207,7 +207,7 @@ export const TrackingPage: React.FC = () => {
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
 
       {/* ── Assignment List ──────────────────────────────────────────────── */}
-      <div className={`lg:col-span-5 bg-white border border-slate-200 rounded-2xl flex-col shadow-sm ${selectedAssignment ? 'hidden lg:flex' : 'flex'} h-[calc(100vh-10rem)] lg:h-[calc(100vh-8rem)]`}>
+      <div className={`lg:col-span-5 bg-white border border-slate-200 rounded-2xl flex-col shadow-sm ${selectedAssignment ? 'hidden lg:flex' : 'flex'} min-h-screen lg:min-h-0`}>
         <div className="p-4 border-b border-slate-100">
           <h3 className="font-bold flex items-center gap-2 mb-3">
             <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
@@ -230,7 +230,7 @@ export const TrackingPage: React.FC = () => {
           <p className="text-[10px] text-slate-500 text-center">Seleccione una asignación para ver detalles.</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-2">
+        <div className="flex-1 p-2 space-y-2">
           {sortedAssignments.map(assignment => {
             const route = state.routes.find(r => r.id === assignment.routeId);
             const vehicle = state.vehicles.find(v => v.id === assignment.vehicleId);
@@ -275,9 +275,9 @@ export const TrackingPage: React.FC = () => {
       </div>
 
       {/* ── Detail Panel ────────────────────────────────────────────────── */}
-      <div className={`lg:col-span-7 ${!selectedAssignment ? 'hidden lg:block' : 'block h-[calc(100vh-10rem)] lg:h-auto'}`}>
+      <div className={`lg:col-span-7 ${!selectedAssignment ? 'hidden lg:block' : 'block min-h-screen lg:min-h-0'}`}>
         {selectedAssignment ? (
-          <div className="bg-white border border-slate-200 rounded-2xl h-full flex flex-col overflow-hidden shadow-sm">
+          <div className="bg-white border border-slate-200 rounded-2xl h-full flex flex-col shadow-sm">
 
             {/* Header */}
             <div className="p-4 md:p-6 border-b border-slate-100 bg-slate-50">

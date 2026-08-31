@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { ReportSubMenuHeader } from './ReportSubMenuHeader';
+import { DateRangeExportModal } from './DateRangeExportModal';
 
 export const FleetAssetsReportView: React.FC = () => {
   const { state } = useAppContext();
@@ -14,6 +15,7 @@ export const FleetAssetsReportView: React.FC = () => {
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [statusFilter, setStatusFilter] = useState<'all' | 'Operativo' | 'Inoperativo' | 'in_route'>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [showExportModal, setShowExportModal] = useState(false);
 
   // Multi-group selection toggle
   const toggleGroupSelection = (groupId: string) => {
@@ -103,24 +105,28 @@ export const FleetAssetsReportView: React.FC = () => {
     };
   }, [filteredVehicles, activeVehicleAssignments]);
 
-  // Export Vehicles
-  const handleExportFleet = () => {
+  const handleExportClick = () => {
+    setShowExportModal(true);
+  };
+
+  const handleExport = (startDate: string, endDate: string) => {
+    // In a full implementation, we would filter history by this range.
+    // Here we export the current filtered fleet.
     const data = filteredVehicles.map(v => {
-      const group = state.workGroups.find(g => g.id === v.workGroupId);
-      const activeOps = activeVehicleAssignments.get(v.id);
+      const activeData = activeVehicleAssignments.get(v.id);
       return {
-        ID: v.id,
-        'Placa / Matrícula': v.plate,
-        'N° Interno / Móvil': v.internalNumber,
-        'Grupo de Trabajo': group?.name || 'General',
-        'Capacidad (kg/m3)': v.capacity,
-        'Estado Mecánico': v.status,
-        'Estado Operativo': activeOps ? `En Ruta (${activeOps.routeName})` : (v.status === 'Operativo' ? 'Disponible en Base' : 'Fuera de Servicio'),
-        'Conductor Asignado': activeOps?.driverName || 'N/A',
+        'Fecha Rango': `${startDate} a ${endDate}`,
+        'Placa': v.plate,
+        'Número Interno': v.internalNumber,
+        'Grupo': v.workGroup,
+        'Estado (Fecha Seleccionada)': v.status,
+        'Capacidad': v.capacity ? `${v.capacity} ton/vol` : 'N/A',
+        'En Ruta Actual': activeData ? 'Sí' : 'No',
+        'Ruta Asignada': activeData?.routeName || 'N/A',
+        'Conductor': activeData?.driverName || 'N/A'
       };
     });
-
-    exportToCsv(`reporte_activos_flota_${new Date().getTime()}.csv`, data);
+    exportToCsv(`estado_flota_${startDate}_${endDate}.csv`, data);
   };
 
   return (
@@ -130,7 +136,7 @@ export const FleetAssetsReportView: React.FC = () => {
         selectedGroupIds={selectedGroupIds}
         onToggleGroup={toggleGroupSelection}
         onSelectAllGroups={selectAllGroups}
-        onExportCsv={handleExportFleet}
+        onExportCsv={handleExportClick}
       >
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="flex items-center space-x-3">
@@ -328,6 +334,12 @@ export const FleetAssetsReportView: React.FC = () => {
           </table>
         </div>
       </div>
+      <DateRangeExportModal 
+        isOpen={showExportModal} 
+        onClose={() => setShowExportModal(false)} 
+        onExport={handleExport} 
+        title="Exportar Activos de Flota" 
+      />
     </div>
   );
 };

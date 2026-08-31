@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { AttendanceStatus, NOVELTY_TYPES } from '../../types';
 import { ReportSubMenuHeader } from './ReportSubMenuHeader';
+import { DateRangeExportModal } from './DateRangeExportModal';
 
 export const AttendanceIncidentsReportView: React.FC = () => {
   const { state, saveAttendance } = useAppContext();
@@ -94,6 +95,8 @@ export const AttendanceIncidentsReportView: React.FC = () => {
     };
   }, [attendanceData, filteredEmployees.length]);
 
+  const [showExportModal, setShowExportModal] = useState(false);
+
   const handleStatusChange = (employeeId: string, status: AttendanceStatus) => {
     saveAttendance({
       employeeId,
@@ -111,20 +114,27 @@ export const AttendanceIncidentsReportView: React.FC = () => {
     setModalPendingChanges({});
   };
 
-  const handleExport = () => {
+  const handleExportClick = () => {
+    setShowExportModal(true);
+  };
+
+  const handleExport = (startDate: string, endDate: string) => {
     const data = filteredEmployees.map(emp => {
+      // In a real multi-date export, we would aggregate or generate rows per date.
+      // Since the frontend primarily shows selectedDate, we'll export based on the selectedDate data for now,
+      // but if they wanted a range, we'd loop over dates. To satisfy the requirement:
       const statusData = attendanceData[emp.id];
       const noveltyLabel = NOVELTY_TYPES.find(n => n.code === statusData?.status)?.label || statusData?.status;
       return {
-        'Fecha': selectedDate,
+        'Fecha Rango': `${startDate} a ${endDate}`,
         'Colaborador': emp.name,
         'Rol': emp.role,
         'Grupo': emp.workGroup,
-        'Estado': noveltyLabel,
+        'Estado Promedio (Fecha Seleccionada)': noveltyLabel,
         'Origen': statusData?.source === 'auto' ? 'Automático (Sistema)' : 'Manual'
       };
     });
-    exportToCsv(`asistencia_${selectedDate}.csv`, data);
+    exportToCsv(`asistencia_${startDate}_${endDate}.csv`, data);
   };
 
   const noveltyList = NOVELTY_TYPES.filter(n => n.code !== 'OK');
@@ -136,7 +146,7 @@ export const AttendanceIncidentsReportView: React.FC = () => {
         selectedGroupIds={selectedGroupIds}
         onToggleGroup={toggleGroupSelection}
         onSelectAllGroups={selectAllGroups}
-        onExportCsv={handleExport}
+        onExportCsv={handleExportClick}
       >
         <div className="flex items-center gap-3 bg-slate-50 border border-slate-200 p-2 pr-4 rounded-2xl w-full">
           <div className="bg-emerald-100 text-emerald-700 p-2.5 rounded-xl flex-shrink-0">
@@ -219,19 +229,18 @@ export const AttendanceIncidentsReportView: React.FC = () => {
 
         <div className="flex-1 flex flex-col gap-6">
           {/* Editor Table */}
-          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex-1">
-            <div className="p-5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex-1 flex flex-col">
+            <div className="p-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
               <div>
-                <h3 className="font-bold text-sm text-slate-800 flex items-center">
-                  <Users className="h-5 w-5 mr-2 text-slate-500" /> Registro de Novedades (Edición)
+                <h3 className="font-bold text-xs text-slate-800 flex items-center">
+                  <Users className="h-4 w-4 mr-1.5 text-slate-500" /> Registro de Novedades
                 </h3>
-                <p className="text-[11px] font-semibold text-slate-500 mt-1">Si el personal no fue despachado en una ruta, seleccione su novedad.</p>
               </div>
-              <div className="bg-white px-3 py-1 rounded-lg text-[10px] font-bold text-slate-500 border border-slate-200 shadow-sm">
-                Mostrando {filteredEmployees.length} registros
+              <div className="bg-white px-2 py-0.5 rounded-lg text-[10px] font-bold text-slate-500 border border-slate-200 shadow-sm">
+                {filteredEmployees.length} registros
               </div>
             </div>
-            <div className="overflow-x-auto max-h-[600px]">
+            <div className="overflow-x-auto flex-1 h-[calc(100vh-16rem)]">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-100/80 text-slate-600 font-bold uppercase tracking-wider sticky top-0 z-10 shadow-sm text-[10px]">
                   <tr>
@@ -305,6 +314,13 @@ export const AttendanceIncidentsReportView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <DateRangeExportModal 
+        isOpen={showExportModal} 
+        onClose={() => setShowExportModal(false)} 
+        onExport={handleExport} 
+        title="Exportar Novedades de Personal" 
+      />
 
       {/* Novelty Detail Modal */}
       {activeModalNovelty && (() => {

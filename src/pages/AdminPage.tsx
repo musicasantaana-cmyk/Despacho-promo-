@@ -304,7 +304,7 @@ const EmployeesTab = () => {
   const [groupFilter, setGroupFilter] = useState<string>(state.activeWorkGroupId || 'Todos');
   useEffect(() => { setGroupFilter(state.activeWorkGroupId || 'Todos'); }, [state.activeWorkGroupId]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<Omit<Employee, 'id'> & { firstName?: string, lastName?: string }>({ name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
+  const [form, setForm] = useState<Employee>({ id: '', name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
   useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: state.activeWorkGroupId || ''})); }, [state.activeWorkGroupId, editingId]);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
@@ -326,7 +326,7 @@ const EmployeesTab = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const fullName = `${form.firstName || ''} ${form.lastName || ''}`.trim() || form.name;
-    if (!fullName || !form.workGroupId) return;
+    if (!fullName || !form.workGroupId || !form.id) return;
     
     const payload = {
       ...form,
@@ -339,13 +339,13 @@ const EmployeesTab = () => {
       addEmployee(payload);
     }
     
-    setForm({ name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
+    setForm({ id: '', name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
     setEditingId(null);
     setIsModalOpen(false);
   };
 
   const handleEdit = (emp: Employee) => {
-    setForm({ name: emp.name, firstName: emp.firstName || emp.name.split(' ')[0], lastName: emp.lastName || emp.name.split(' ').slice(1).join(' '), role: emp.role, phone: emp.phone, workGroup: emp.workGroup, workGroupId: emp.workGroupId || state.activeWorkGroupId || '' });
+    setForm({ id: emp.id, name: emp.name, firstName: emp.firstName || emp.name.split(' ')[0], lastName: emp.lastName || emp.name.split(' ').slice(1).join(' '), role: emp.role, phone: emp.phone, workGroup: emp.workGroup, workGroupId: emp.workGroupId || state.activeWorkGroupId || '' });
     setEditingId(emp.id);
     setIsModalOpen(true);
   };
@@ -362,7 +362,7 @@ const EmployeesTab = () => {
   };
 
   const openNewModal = () => {
-    setForm({ name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
+    setForm({ id: '', name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
     setEditingId(null);
     setIsModalOpen(true);
   };
@@ -422,6 +422,7 @@ const EmployeesTab = () => {
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider font-semibold">
             <tr className="border-b border-slate-100">
+              <th className="px-4 py-3">Cédula</th>
               <th className="px-4 py-3">Apellido</th>
               <th className="px-4 py-3">Nombre</th>
               <th className="px-4 py-3">Rol</th>
@@ -433,6 +434,9 @@ const EmployeesTab = () => {
           <tbody className="divide-y divide-slate-50 text-sm">
             {activeGroupEmps.map(emp => (
               <tr key={emp.id} className="hover:bg-slate-50/80 transition-colors">
+                <td className="px-4 py-3 font-mono text-xs text-slate-500">
+                  {emp.id}
+                </td>
                 <td className="px-4 py-3 font-semibold text-slate-900">
                   {emp.lastName || emp.name.split(' ').slice(1).join(' ') || '-'}
                 </td>
@@ -500,6 +504,10 @@ const EmployeesTab = () => {
 
       <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? "Editar Personal" : "Registrar Personal"}>
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Cédula / ID</label>
+            <input required type="text" disabled={!!editingId} value={form.id} onChange={e => setForm({...form, id: e.target.value})} placeholder="Número de documento" className={`w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none ${editingId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} />
+          </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Apellido</label>
             <input required type="text" value={form.lastName || ''} onChange={e => setForm({...form, lastName: e.target.value})} placeholder="Ej. Pérez" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />

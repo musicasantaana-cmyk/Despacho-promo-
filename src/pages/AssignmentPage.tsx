@@ -62,11 +62,11 @@ export const AssignmentPage: React.FC = () => {
     return new Set(activeVehicleAssignments.map(a => a.vehicleId));
   }, [activeVehicleAssignments]);
 
-  // Active employee assignments on selected date (status != Cancelado)
+  // Active employee assignments on selected date (status != Cancelado and != Base)
   const activeEmployeeAssignments = useMemo(() => {
     return state.assignments.filter(a => 
       a.date.slice(0, 10) === selectedDateStr && 
-      a.status !== 'Cancelado'
+      !['Base', 'Cancelado'].includes(a.status)
     );
   }, [state.assignments, selectedDateStr]);
 
@@ -83,13 +83,27 @@ export const AssignmentPage: React.FC = () => {
   const activeGroupRoutes = state.routes.filter(r => r.workGroupId === state.activeWorkGroupId);
   const activeCrews = (state.crews || []).filter(c => c.workGroupId === state.activeWorkGroupId);
 
+  const [employeeSearchTerm, setEmployeeSearchTerm] = useState('');
+
   const displayedEmployees = useMemo(() => {
-    if (!selectedCrewId) return activeGroupEmployees;
-    const crew = activeCrews.find(c => c.id === selectedCrewId);
-    if (!crew) return activeGroupEmployees;
-    const crewMemberIds = new Set([crew.driverId, ...(crew.assistantIds || [])].filter(Boolean));
-    return activeGroupEmployees.filter(e => crewMemberIds.has(e.id));
-  }, [selectedCrewId, activeCrews, activeGroupEmployees]);
+    let list = activeGroupEmployees;
+    if (selectedCrewId) {
+      const crew = activeCrews.find(c => c.id === selectedCrewId);
+      if (crew) {
+        const crewMemberIds = new Set([crew.driverId, ...(crew.assistantIds || [])].filter(Boolean));
+        list = activeGroupEmployees.filter(e => crewMemberIds.has(e.id));
+      }
+    }
+    if (employeeSearchTerm) {
+      const term = employeeSearchTerm.toLowerCase();
+      list = list.filter(e => 
+        e.name.toLowerCase().includes(term) || 
+        (e.lastName && e.lastName.toLowerCase().includes(term)) ||
+        e.id.toLowerCase().includes(term)
+      );
+    }
+    return list;
+  }, [selectedCrewId, activeCrews, activeGroupEmployees, employeeSearchTerm]);
 
   const toggleEmployee = (id: string) => {
     setEmployeeIds(prev => prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id]);
@@ -255,8 +269,17 @@ export const AssignmentPage: React.FC = () => {
               </div>
 
               <div>
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
-                  <label className="block text-sm font-medium text-slate-700">Personal Asignado</label>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <label className="block text-sm font-medium text-slate-700">Personal Asignado</label>
+                    <input 
+                      type="text" 
+                      placeholder="Buscar cédula, nombre..." 
+                      value={employeeSearchTerm}
+                      onChange={e => setEmployeeSearchTerm(e.target.value)}
+                      className="border border-slate-300 rounded-lg px-2 py-1 text-xs focus:ring-2 focus:ring-emerald-500 outline-none w-full sm:w-48"
+                    />
+                  </div>
                   {activeCrews.length > 0 && (
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">Filtrar por tripulación:</span>

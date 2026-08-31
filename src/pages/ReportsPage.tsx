@@ -7,11 +7,12 @@ import {
   X, Clock, MapPin, Layers, Info
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
-import { Assignment, Incident, RouteDef, Vehicle, Employee } from '../types';
+import { Assignment, Employee, RouteDef, Vehicle, WorkGroup, Incident } from '../types';
 import { AttendanceIncidentsReportView } from '../components/reports/AttendanceIncidentsReportView';
 import { FleetAssetsReportView } from '../components/reports/FleetAssetsReportView';
 import { CustomExportReportView } from '../components/reports/CustomExportReportView';
 import { ReportSubMenuHeader } from '../components/reports/ReportSubMenuHeader';
+import { DateRangeExportModal } from '../components/reports/DateRangeExportModal';
 
 type ReportSubTab = 'attendance' | 'fleet' | 'export_wizard' | 'general';
 type DetailModalType = 
@@ -31,6 +32,24 @@ export const ReportsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ReportSubTab>('attendance');
   const [activeDetail, setActiveDetail] = useState<DetailModalType>(null);
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(state.activeWorkGroupId ? [state.activeWorkGroupId] : []);
+  
+  // Date Range State
+  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({
+    start: new Date(new Date().setHours(0, 0, 0, 0)).toISOString().slice(0, 10),
+    end: new Date(new Date().setHours(23, 59, 59, 999)).toISOString().slice(0, 10)
+  });
+  const [showExportModal, setShowExportModal] = useState<'assignments' | 'employees' | null>(null);
+
+  const toggleGroupSelection = (groupId: string) => {
+    setSelectedGroupIds(prev => 
+      prev.includes(groupId) ? prev.filter(id => id !== groupId) : [...prev, groupId]
+    );
+  };
+
+  const selectAllGroups = () => {
+    setSelectedGroupIds([]);
+  };
 
   // Multi-route filter toggles
   const toggleRouteSelection = (routeId: string) => {
@@ -43,10 +62,10 @@ export const ReportsPage: React.FC = () => {
     setSelectedRouteIds([]);
   };
 
-  // Group routes matching current active group
+  // Group routes matching current selected groups
   const activeGroupRoutes = useMemo(() => {
-    return state.routes.filter(r => !state.activeWorkGroupId || r.workGroupId === state.activeWorkGroupId);
-  }, [state.routes, state.activeWorkGroupId]);
+    return state.routes.filter(r => selectedGroupIds.length === 0 || (r.workGroupId && selectedGroupIds.includes(r.workGroupId)));
+  }, [state.routes, selectedGroupIds]);
 
   // Derived metrics based on active group & selected route filters
   const metrics = useMemo(() => {
@@ -58,8 +77,12 @@ export const ReportsPage: React.FC = () => {
 
     // Relevant assignments matching active group & selected routes
     const relevantAssignments = state.assignments.filter(a => {
-      if (state.activeWorkGroupId && a.workGroupId !== state.activeWorkGroupId) return false;
+      if (selectedGroupIds.length > 0 && (!a.workGroupId || !selectedGroupIds.includes(a.workGroupId))) return false;
       if (selectedRouteIds.length > 0 && !selectedRouteIds.includes(a.routeId)) return false;
+      
+      const assignDate = a.date.slice(0, 10);
+      if (assignDate < dateRange.start || assignDate > dateRange.end) return false;
+      
       return true;
     });
 
@@ -76,7 +99,7 @@ export const ReportsPage: React.FC = () => {
 
     // Pareto 3: Vehículos Asignados / Total Vehículos Grupo
     const relevantVehicles = state.vehicles.filter(v => 
-      !state.activeWorkGroupId || v.workGroupId === state.activeWorkGroupId
+      selectedGroupIds.length === 0 || (v.workGroupId && selectedGroupIds.includes(v.workGroupId))
     );
     const totalVehiclesCount = relevantVehicles.length;
     const assignedVehicleIdsSet = new Set(relevantAssignments.map(a => a.vehicleId));
@@ -86,7 +109,7 @@ export const ReportsPage: React.FC = () => {
 
     // Pareto 4: Personal Asignado / Total Personal Grupo
     const relevantEmployees = state.employees.filter(e => 
-      !state.activeWorkGroupId || e.workGroupId === state.activeWorkGroupId
+      selectedGroupIds.length === 0 || (e.workGroupId && selectedGroupIds.includes(e.workGroupId))
     );
     const totalEmployeesCount = relevantEmployees.length;
     const assignedEmployeeIdsSet = new Set(relevantAssignments.flatMap(a => a.employeeIds || []));
@@ -255,11 +278,20 @@ export const ReportsPage: React.FC = () => {
       avgExecMins,
       globalEfficiency
     };
-  }, [state.assignments, state.routes, state.vehicles, state.employees, state.activeWorkGroupId, selectedRouteIds, activeGroupRoutes]);
+  }, [state.assignments, state.routes, state.vehicles, state.employees, selectedGroupIds, selectedRouteIds, activeGroupRoutes, dateRange]);
 
   // Export functions
-  const handleExportAssignments = () => {
-    const data = metrics.relevantAssignments.map(a => {
+  const handleExportAssignments = (startDate: string, endDate: string) => {
+    // Already filtered by dateRange if dateRange was updated.
+    // If we want to strictly export what they just picked in the modal:
+    const toExport = state.assignments.filter(a => {
+      if (selectedGroupIds.length > 0 && (!a.workGroupId || !selectedGroupIds.includes(a.workGroupId))) return false;
+      if (selectedRouteIds.length > 0 && !selectedRouteIds.includes(a.routeId)) return false;
+      const assignDate = a.date.slice(0, 10);
+      return assignDate >= startDate && assignDate <= endDate;
+    });
+
+    const data = toExport.map(a => {
       const route = state.routes.find(r => r.id === a.routeId);
       const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
       return {
@@ -274,17 +306,27 @@ export const ReportsPage: React.FC = () => {
         'Peso (Tons)': a.weightTons !== undefined ? a.weightTons : 'N/A'
       };
     });
-    exportToCsv(`asignaciones_${state.activeWorkGroupId || 'general'}_${new Date().getTime()}.csv`, data);
+    exportToCsv(`asignaciones_${startDate}_${endDate}.csv`, data);
   };
 
-  const handleExportEmployees = () => {
-    const data = metrics.relevantEmployees.map(e => ({
-      ID: e.id,
-      Nombre: e.name,
-      Rol: e.role,
-      Telefono: e.phone
-    }));
-    exportToCsv(`personal_${state.activeWorkGroupId || 'general'}_${new Date().getTime()}.csv`, data);
+  const handleExportEmployees = (startDate: string, endDate: string) => {
+    const data = metrics.relevantEmployees.map(e => {
+      const group = state.workGroups.find(g => g.id === e.workGroupId);
+      return {
+        ID: e.id,
+        Nombre: e.name,
+        Rol: e.role,
+        Telefono: e.phone,
+        'Grupo de Trabajo': group?.name || 'General'
+      };
+    });
+    exportToCsv(`directorio_personal_${startDate}_${endDate}.csv`, data);
+  };
+
+  const executeExport = (startDate: string, endDate: string) => {
+    if (showExportModal === 'assignments') handleExportAssignments(startDate, endDate);
+    if (showExportModal === 'employees') handleExportEmployees(startDate, endDate);
+    setDateRange({ start: startDate, end: endDate });
   };
 
   const tabs: { id: ReportSubTab; label: string; icon: React.ReactNode; badge?: string }[] = [
@@ -352,9 +394,9 @@ export const ReportsPage: React.FC = () => {
           <div className="space-y-6">
             <ReportSubMenuHeader 
               workGroups={state.workGroups}
-              selectedGroupIds={state.activeWorkGroupId ? [state.activeWorkGroupId] : []}
-              onToggleGroup={(id) => setActiveWorkGroup(state.activeWorkGroupId === id ? null : id)}
-              onSelectAllGroups={() => setActiveWorkGroup(null)}
+              selectedGroupIds={selectedGroupIds}
+              onToggleGroup={toggleGroupSelection}
+              onSelectAllGroups={selectAllGroups}
               routes={activeGroupRoutes}
               selectedRouteIds={selectedRouteIds}
               onToggleRoute={toggleRouteSelection}
@@ -667,7 +709,7 @@ export const ReportsPage: React.FC = () => {
                   Descargue el historial de asignaciones, rutas y novedades registradas en el filtro actual.
                 </p>
                 <button 
-                  onClick={handleExportAssignments}
+                  onClick={() => setShowExportModal('assignments')}
                   className="w-full flex items-center justify-center bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl py-3 text-sm font-bold transition-colors"
                 >
                   <Download className="h-4 w-4 mr-2" />
@@ -684,7 +726,7 @@ export const ReportsPage: React.FC = () => {
                   Descargue el listado completo de empleados, incluyendo conductores, ayudantes y coordinadores.
                 </p>
                 <button 
-                  onClick={handleExportEmployees}
+                  onClick={() => setShowExportModal('employees')}
                   className="w-full flex items-center justify-center bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-xl py-3 text-sm font-bold transition-colors"
                 >
                   <Download className="h-4 w-4 mr-2" />
@@ -933,6 +975,13 @@ export const ReportsPage: React.FC = () => {
           </div>
         )}
       </div>
+      {/* Export Modal */}
+      <DateRangeExportModal
+        isOpen={showExportModal !== null}
+        onClose={() => setShowExportModal(null)}
+        onExport={executeExport}
+        title={showExportModal === 'assignments' ? 'Exportar Asignaciones' : 'Exportar Directorio'}
+      />
     </div>
   );
 };

@@ -11,7 +11,7 @@ interface AppContextProps {
   addWorkGroup: (name: string) => Promise<void>;
   deleteWorkGroup: (id: string) => Promise<void>;
   setActiveWorkGroup: (id: string | null) => void;
-  addEmployee: (emp: Omit<Employee, 'id'>) => Promise<void>;
+  addEmployee: (emp: Employee) => Promise<void>;
   updateEmployee: (id: string, emp: Partial<Employee>) => Promise<void>;
   deleteEmployee: (id: string) => Promise<void>;
   deleteAllEmployees: () => Promise<void>;
@@ -183,9 +183,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try { await deleteDoc(doc(db, 'workGroups', id)); } catch (e) { console.error(e); }
   };
 
-  const addEmployee = async (emp: Omit<Employee, 'id'>) => {
+  const addEmployee = async (emp: Employee) => {
     try {
-      const docRef = doc(collection(db, 'employees'));
+      const docRef = doc(db, 'employees', emp.id);
       await setDoc(docRef, { ...emp, workGroupId: emp.workGroupId || state.activeWorkGroupId || '' });
     } catch (e) { console.error(e); }
   };
@@ -240,8 +240,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           assignedGroupId = foundGroup.id;
         }
 
+        const cedula = String(row.id || row.cedula || row.documento || generateId()).trim();
         const fullName = `${firstName} ${lastName}`.trim() || firstName || lastName || 'Sin Nombre';
-        const empRef = doc(collection(db, 'employees'));
+        const empRef = doc(db, 'employees', cedula);
         batch.set(empRef, {
           name: fullName,
           firstName: firstName,
