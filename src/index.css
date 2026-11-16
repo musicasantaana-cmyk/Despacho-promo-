@@ -1,16 +1,1 @@
 @import "tailwindcss";
-
-@layer base {
-  body {
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-  }
-
-  .font-mono,
-  .tabular-nums {
-    font-variant-numeric: tabular-nums;
-  }
-
-  .font-mono {
-    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-  }
-}

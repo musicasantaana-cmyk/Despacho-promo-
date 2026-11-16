@@ -9,14 +9,14 @@ import {
 } from 'lucide-react';
 import { AttendanceStatus, NOVELTY_TYPES } from '../../types';
 import { ReportSubMenuHeader } from './ReportSubMenuHeader';
-import { DateRangeExportModal } from './DateRangeExportModal';
 
 export const AttendanceIncidentsReportView: React.FC = () => {
-  const { state, saveAttendance } = useAppContext();
+  const { state, saveAttendance, addAssignment } = useAppContext();
 
   // Filters State
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]); // empty = all groups
+  const [searchTerm, setSearchTerm] = useState('');
   
   // Modal State
   const [activeModalNovelty, setActiveModalNovelty] = useState<string | null>(null);
@@ -95,15 +95,47 @@ export const AttendanceIncidentsReportView: React.FC = () => {
     };
   }, [attendanceData, filteredEmployees.length]);
 
-  const [showExportModal, setShowExportModal] = useState(false);
+  const searchedEmployees = useMemo(() => {
+    if (!searchTerm.trim()) return filteredEmployees;
+    const lowerSearch = searchTerm.toLowerCase();
+    return filteredEmployees.filter(emp => emp.name.toLowerCase().includes(lowerSearch));
+  }, [filteredEmployees, searchTerm]);
 
   const handleStatusChange = (employeeId: string, status: AttendanceStatus) => {
+    if (status === 'OK') {
+      const emp = state.employees.find(e => e.id === employeeId);
+      if (emp) {
+        setPendingAssignmentEmp(emp);
+      }
+      return;
+    }
+
     saveAttendance({
       employeeId,
       date: selectedDate,
       status,
       workGroupId: state.employees.find(e => e.id === employeeId)?.workGroupId
     });
+  };
+
+  const [pendingAssignmentEmp, setPendingAssignmentEmp] = useState<{id: string, name: string, workGroupId?: string} | null>(null);
+  const [assignmentRouteId, setAssignmentRouteId] = useState('');
+  const [assignmentVehicleId, setAssignmentVehicleId] = useState('');
+  
+  const handleCreateAssignment = async () => {
+    if (!pendingAssignmentEmp || !assignmentRouteId || !assignmentVehicleId) return;
+    
+    await addAssignment({
+      routeId: assignmentRouteId,
+      vehicleId: assignmentVehicleId,
+      employeeIds: [pendingAssignmentEmp.id],
+      date: selectedDate + 'T12:00:00Z', // Fake ISO time to match standard format
+      workGroupId: pendingAssignmentEmp.workGroupId
+    });
+    
+    setPendingAssignmentEmp(null);
+    setAssignmentRouteId('');
+    setAssignmentVehicleId('');
   };
 
   const handleModalSave = () => {
@@ -114,27 +146,20 @@ export const AttendanceIncidentsReportView: React.FC = () => {
     setModalPendingChanges({});
   };
 
-  const handleExportClick = () => {
-    setShowExportModal(true);
-  };
-
-  const handleExport = (startDate: string, endDate: string) => {
+  const handleExport = () => {
     const data = filteredEmployees.map(emp => {
-      // In a real multi-date export, we would aggregate or generate rows per date.
-      // Since the frontend primarily shows selectedDate, we'll export based on the selectedDate data for now,
-      // but if they wanted a range, we'd loop over dates. To satisfy the requirement:
       const statusData = attendanceData[emp.id];
       const noveltyLabel = NOVELTY_TYPES.find(n => n.code === statusData?.status)?.label || statusData?.status;
       return {
-        'Fecha Rango': `${startDate} a ${endDate}`,
+        'Fecha': selectedDate,
         'Colaborador': emp.name,
         'Rol': emp.role,
         'Grupo': emp.workGroup,
-        'Estado Promedio (Fecha Seleccionada)': noveltyLabel,
+        'Estado': noveltyLabel,
         'Origen': statusData?.source === 'auto' ? 'Automático (Sistema)' : 'Manual'
       };
     });
-    exportToCsv(`asistencia_${startDate}_${endDate}.csv`, data);
+    exportToCsv(`asistencia_${selectedDate}.csv`, data);
   };
 
   const noveltyList = NOVELTY_TYPES.filter(n => n.code !== 'OK');
@@ -146,7 +171,7 @@ export const AttendanceIncidentsReportView: React.FC = () => {
         selectedGroupIds={selectedGroupIds}
         onToggleGroup={toggleGroupSelection}
         onSelectAllGroups={selectAllGroups}
-        onExportCsv={handleExportClick}
+        onExportCsv={handleExport}
       >
         <div className="flex items-center gap-3 bg-slate-50 border border-slate-200 p-2 pr-4 rounded-2xl w-full">
           <div className="bg-emerald-100 text-emerald-700 p-2.5 rounded-xl flex-shrink-0">
@@ -229,18 +254,33 @@ export const AttendanceIncidentsReportView: React.FC = () => {
 
         <div className="flex-1 flex flex-col gap-6">
           {/* Editor Table */}
-          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex-1 flex flex-col">
-            <div className="p-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex-1">
+            <div className="p-5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
-                <h3 className="font-bold text-xs text-slate-800 flex items-center">
-                  <Users className="h-4 w-4 mr-1.5 text-slate-500" /> Registro de Novedades
+                <h3 className="font-bold text-sm text-slate-800 flex items-center">
+                  <Users className="h-5 w-5 mr-2 text-slate-500" /> Registro de Novedades (Edición)
                 </h3>
+                <p className="text-[11px] font-semibold text-slate-500 mt-1">Si el personal no fue despachado en una ruta, seleccione su novedad.</p>
               </div>
-              <div className="bg-white px-2 py-0.5 rounded-lg text-[10px] font-bold text-slate-500 border border-slate-200 shadow-sm">
-                {filteredEmployees.length} registros
+              <div className="flex items-center gap-3 w-full sm:w-auto">
+                <div className="relative flex-1 sm:w-64">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Search className="h-4 w-4 text-slate-400" />
+                  </div>
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Buscar personal..."
+                    className="block w-full pl-9 pr-3 py-1.5 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 placeholder-slate-400 text-slate-700"
+                  />
+                </div>
+                <div className="bg-white px-3 py-1.5 rounded-lg text-[10px] font-bold text-slate-500 border border-slate-200 shadow-sm whitespace-nowrap">
+                  Mostrando {searchedEmployees.length} registros
+                </div>
               </div>
             </div>
-            <div className="overflow-x-auto flex-1 h-[calc(100vh-16rem)]">
+            <div className="overflow-x-auto max-h-[600px]">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-100/80 text-slate-600 font-bold uppercase tracking-wider sticky top-0 z-10 shadow-sm text-[10px]">
                   <tr>
@@ -251,7 +291,7 @@ export const AttendanceIncidentsReportView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-medium">
-                  {filteredEmployees.map(emp => {
+                  {searchedEmployees.map(emp => {
                     const data = attendanceData[emp.id];
                     return (
                       <tr key={emp.id} className="hover:bg-slate-50/50 transition-colors">
@@ -300,11 +340,11 @@ export const AttendanceIncidentsReportView: React.FC = () => {
                       </tr>
                     );
                   })}
-                  {filteredEmployees.length === 0 && (
+                  {searchedEmployees.length === 0 && (
                     <tr>
                       <td colSpan={4} className="p-8 text-center text-slate-400">
                         <Users className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                        <span className="font-semibold text-sm">Sin personal en los grupos seleccionados.</span>
+                        <span className="font-semibold text-sm">No se encontró personal con los filtros aplicados.</span>
                       </td>
                     </tr>
                   )}
@@ -314,13 +354,6 @@ export const AttendanceIncidentsReportView: React.FC = () => {
           </div>
         </div>
       </div>
-
-      <DateRangeExportModal 
-        isOpen={showExportModal} 
-        onClose={() => setShowExportModal(false)} 
-        onExport={handleExport} 
-        title="Exportar Novedades de Personal" 
-      />
 
       {/* Novelty Detail Modal */}
       {activeModalNovelty && (() => {
@@ -360,7 +393,13 @@ export const AttendanceIncidentsReportView: React.FC = () => {
                           <div className="flex items-center min-w-[200px]">
                             <select 
                               value={currentModalStatus}
-                              onChange={(e) => setModalPendingChanges(prev => ({ ...prev, [emp.id]: e.target.value as AttendanceStatus }))}
+                              onChange={(e) => {
+                                if (e.target.value === 'OK') {
+                                  setPendingAssignmentEmp(emp);
+                                } else {
+                                  setModalPendingChanges(prev => ({ ...prev, [emp.id]: e.target.value as AttendanceStatus }));
+                                }
+                              }}
                               disabled={data?.isAssigned}
                               className={`w-full text-xs font-bold py-2 px-3 rounded-lg border outline-none transition-colors ${
                                 data?.isAssigned 
@@ -400,6 +439,67 @@ export const AttendanceIncidentsReportView: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* Manual Assignment Modal for 'OK' Status */}
+      {pendingAssignmentEmp && (
+        <div className="fixed inset-0 bg-slate-900/50 z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-slate-100 bg-slate-50">
+              <h3 className="font-bold text-slate-800">Asignar a Ruta Operativa</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Al marcar a <strong>{pendingAssignmentEmp.name}</strong> como operativo, debes asignarlo a una ruta activa.
+              </p>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Ruta</label>
+                <select
+                  value={assignmentRouteId}
+                  onChange={(e) => setAssignmentRouteId(e.target.value)}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="">Seleccione una ruta...</option>
+                  {state.routes.map(r => (
+                    <option key={r.id} value={r.id}>{r.code ? `[${r.code}] ` : ''}{r.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Vehículo</label>
+                <select
+                  value={assignmentVehicleId}
+                  onChange={(e) => setAssignmentVehicleId(e.target.value)}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="">Seleccione un vehículo...</option>
+                  {state.vehicles.map(v => (
+                    <option key={v.id} value={v.id}>{v.plate} ({v.type})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+              <button 
+                onClick={() => {
+                  setPendingAssignmentEmp(null);
+                  setAssignmentRouteId('');
+                  setAssignmentVehicleId('');
+                }}
+                className="px-4 py-2 rounded-xl font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleCreateAssignment}
+                disabled={!assignmentRouteId || !assignmentVehicleId}
+                className="px-4 py-2 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 transition-colors shadow-md"
+              >
+                Crear Asignación
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

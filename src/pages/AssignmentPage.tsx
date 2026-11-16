@@ -62,11 +62,23 @@ export const AssignmentPage: React.FC = () => {
     return new Set(activeVehicleAssignments.map(a => a.vehicleId));
   }, [activeVehicleAssignments]);
 
-  // Active employee assignments on selected date (status != Cancelado and != Base)
+  // Active route assignments on selected date (status != Cancelado)
+  const activeRouteAssignments = useMemo(() => {
+    return state.assignments.filter(a => 
+      a.date.slice(0, 10) === selectedDateStr && 
+      a.status !== 'Cancelado'
+    );
+  }, [state.assignments, selectedDateStr]);
+
+  const assignedRouteIds = useMemo(() => {
+    return new Set(activeRouteAssignments.map(a => a.routeId));
+  }, [activeRouteAssignments]);
+
+  // Active employee assignments on selected date (status != Cancelado)
   const activeEmployeeAssignments = useMemo(() => {
     return state.assignments.filter(a => 
       a.date.slice(0, 10) === selectedDateStr && 
-      !['Base', 'Cancelado'].includes(a.status)
+      a.status !== 'Cancelado'
     );
   }, [state.assignments, selectedDateStr]);
 
@@ -83,27 +95,13 @@ export const AssignmentPage: React.FC = () => {
   const activeGroupRoutes = state.routes.filter(r => r.workGroupId === state.activeWorkGroupId);
   const activeCrews = (state.crews || []).filter(c => c.workGroupId === state.activeWorkGroupId);
 
-  const [employeeSearchTerm, setEmployeeSearchTerm] = useState('');
-
   const displayedEmployees = useMemo(() => {
-    let list = activeGroupEmployees;
-    if (selectedCrewId) {
-      const crew = activeCrews.find(c => c.id === selectedCrewId);
-      if (crew) {
-        const crewMemberIds = new Set([crew.driverId, ...(crew.assistantIds || [])].filter(Boolean));
-        list = activeGroupEmployees.filter(e => crewMemberIds.has(e.id));
-      }
-    }
-    if (employeeSearchTerm) {
-      const term = employeeSearchTerm.toLowerCase();
-      list = list.filter(e => 
-        e.name.toLowerCase().includes(term) || 
-        (e.lastName && e.lastName.toLowerCase().includes(term)) ||
-        e.id.toLowerCase().includes(term)
-      );
-    }
-    return list;
-  }, [selectedCrewId, activeCrews, activeGroupEmployees, employeeSearchTerm]);
+    if (!selectedCrewId) return activeGroupEmployees;
+    const crew = activeCrews.find(c => c.id === selectedCrewId);
+    if (!crew) return activeGroupEmployees;
+    const crewMemberIds = new Set([crew.driverId, ...(crew.assistantIds || [])].filter(Boolean));
+    return activeGroupEmployees.filter(e => crewMemberIds.has(e.id));
+  }, [selectedCrewId, activeCrews, activeGroupEmployees]);
 
   const toggleEmployee = (id: string) => {
     setEmployeeIds(prev => prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id]);
@@ -131,6 +129,12 @@ export const AssignmentPage: React.FC = () => {
     e.preventDefault();
     if (!routeId || !vehicleId || employeeIds.length === 0 || !date) return;
     
+    // Prevent double booking route
+    if (assignedRouteIds.has(routeId)) {
+      alert("Esta ruta ya se encuentra asignada para la fecha seleccionada.");
+      return;
+    }
+
     // Prevent double booking vehicle
     if (occupiedVehicleIds.has(vehicleId)) {
       alert("El vehículo seleccionado se encuentra actualmente en una ruta activa. Debe finalizar la ruta previa para asignarlo de nuevo.");
@@ -234,18 +238,24 @@ export const AssignmentPage: React.FC = () => {
                 <select required value={routeId} onChange={e => setRouteId(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
                   <option value="">Seleccione una ruta...</option>
                   <optgroup label={`Rutas que operan los ${dayNames[selectedDayOfWeek]}`}>
-                    {activeGroupRoutes.filter(r => (r.operatingDays || []).includes(selectedDayOfWeek)).map(r => (
-                      <option key={r.id} value={r.id}>
-                        {r.code ? `[${r.code}] ` : ''}{r.name} ({r.origin} - {r.destination}) ✅ (Opera Hoy)
-                      </option>
-                    ))}
+                    {activeGroupRoutes.filter(r => (r.operatingDays || []).includes(selectedDayOfWeek)).map(r => {
+                      const isAssigned = assignedRouteIds.has(r.id);
+                      return (
+                        <option key={r.id} value={r.id} disabled={isAssigned}>
+                          {r.code ? `[${r.code}] ` : ''}{r.name} ({r.origin} - {r.destination}) {isAssigned ? '⛔ (Asignada)' : '✅ (Por Asignar)'}
+                        </option>
+                      );
+                    })}
                   </optgroup>
                   <optgroup label="Otras Rutas (Fuera de frecuencia hoy)">
-                    {activeGroupRoutes.filter(r => !(r.operatingDays || []).includes(selectedDayOfWeek)).map(r => (
-                      <option key={r.id} value={r.id}>
-                        {r.code ? `[${r.code}] ` : ''}{r.name} ({r.origin} - {r.destination}) ⚠️ (Fuera de frecuencia)
-                      </option>
-                    ))}
+                    {activeGroupRoutes.filter(r => !(r.operatingDays || []).includes(selectedDayOfWeek)).map(r => {
+                      const isAssigned = assignedRouteIds.has(r.id);
+                      return (
+                        <option key={r.id} value={r.id} disabled={isAssigned}>
+                          {r.code ? `[${r.code}] ` : ''}{r.name} ({r.origin} - {r.destination}) {isAssigned ? '⛔ (Asignada)' : '⚠️ (Fuera de frecuencia)'}
+                        </option>
+                      );
+                    })}
                   </optgroup>
                 </select>
                 {activeGroupRoutes.length === 0 && (
@@ -269,17 +279,8 @@ export const AssignmentPage: React.FC = () => {
               </div>
 
               <div>
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                    <label className="block text-sm font-medium text-slate-700">Personal Asignado</label>
-                    <input 
-                      type="text" 
-                      placeholder="Buscar cédula, nombre..." 
-                      value={employeeSearchTerm}
-                      onChange={e => setEmployeeSearchTerm(e.target.value)}
-                      className="border border-slate-300 rounded-lg px-2 py-1 text-xs focus:ring-2 focus:ring-emerald-500 outline-none w-full sm:w-48"
-                    />
-                  </div>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
+                  <label className="block text-sm font-medium text-slate-700">Personal Asignado</label>
                   {activeCrews.length > 0 && (
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">Filtrar por tripulación:</span>

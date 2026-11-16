@@ -1,27 +1,30 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if false;
+    match /{document=**} { 
+      allow read, write: if false; 
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    function isSignedIn() { 
+      return request.auth != null; 
+    }
+    
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
     }
 
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
 
     function isValidWorkGroup(data) {
-      return data.keys().hasAll(['name']) &&
-             data.keys().hasOnly(['name']) &&
-             data.name is string && data.name.size() >= 1 && data.name.size() <= 100;
+      return data.keys().hasOnly(['name']) &&
+             data.keys().size() >= 1 &&
+             data.name is string && data.name.size() <= 100;
     }
 
     function isValidEmployee(data) {
-      return data.keys().hasAll(['name', 'role', 'phone']) &&
-             data.keys().hasOnly(['name', 'firstName', 'lastName', 'role', 'phone', 'workGroup', 'workGroupId']) &&
-             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      return data.keys().hasOnly(['name', 'firstName', 'lastName', 'role', 'phone', 'workGroup', 'workGroupId']) &&
+             data.name is string && data.name.size() <= 100 &&
              data.role in ['Conductor', 'Ayudante', 'Coordinador'] &&
              data.phone is string && data.phone.size() <= 20 &&
              data.get('workGroup', '') is string && data.get('workGroup', '').size() <= 100 &&
@@ -31,32 +34,39 @@ service cloud.firestore {
     }
 
     function isValidVehicle(data) {
-      return data.keys().hasAll(['plate', 'internalNumber', 'capacity', 'status']) &&
-             data.keys().hasOnly(['plate', 'internalNumber', 'capacity', 'status', 'workGroupId']) &&
-             data.plate is string && data.plate.size() >= 1 && data.plate.size() <= 20 &&
+      return data.keys().hasOnly(['plate', 'internalNumber', 'capacity', 'status', 'workGroupId']) &&
+             data.plate is string && data.plate.size() <= 20 &&
              data.internalNumber is string && data.internalNumber.size() <= 50 &&
-             data.capacity is number && data.capacity >= 0 &&
+             data.capacity is number &&
              data.status in ['Operativo', 'Inoperativo'] &&
              data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128;
     }
 
     function isValidRoute(data) {
-      return data.keys().hasAll(['name', 'code', 'operatingDays', 'origin', 'destination', 'estimatedHours']) &&
-             data.keys().hasOnly(['name', 'code', 'operatingDays', 'origin', 'destination', 'estimatedHours', 'workGroupId', 'firstName', 'lastName']) &&
-             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      return data.keys().hasOnly(['name', 'code', 'operatingDays', 'origin', 'destination', 'estimatedHours', 'workGroupId', 'firstName', 'lastName']) &&
+             data.name is string && data.name.size() <= 100 &&
              data.code is string && data.code.size() <= 50 &&
              data.operatingDays is list && data.operatingDays.size() <= 7 &&
              data.origin is string && data.origin.size() <= 100 &&
              data.destination is string && data.destination.size() <= 100 &&
-             data.estimatedHours is number && data.estimatedHours >= 0 &&
+             data.estimatedHours is number &&
              data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
              data.get('firstName', '') is string && data.get('firstName', '').size() <= 50 &&
              data.get('lastName', '') is string && data.get('lastName', '').size() <= 50;
     }
 
+    function isValidIncident(data) {
+      return data.keys().hasOnly(['id', 'timestamp', 'type', 'description', 'startTime', 'endTime']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.timestamp is string && data.timestamp.size() <= 50 &&
+             data.type in ['Retraso', 'Mecánico', 'Personal', 'Clima', 'Otro'] &&
+             data.description is string && data.description.size() <= 500 &&
+             data.get('startTime', '') is string && data.get('startTime', '').size() <= 50 &&
+             data.get('endTime', '') is string && data.get('endTime', '').size() <= 50;
+    }
+
     function isValidAssignment(data) {
-      return data.keys().hasAll(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents']) &&
-             data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
+      return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
              data.routeId is string && data.routeId.size() <= 128 &&
              data.vehicleId is string && data.vehicleId.size() <= 128 &&
              data.employeeIds is list && data.employeeIds.size() <= 10 &&
@@ -68,9 +78,8 @@ service cloud.firestore {
     }
 
     function isValidCrew(data) {
-      return data.keys().hasAll(['name', 'driverId', 'assistantIds']) &&
-             data.keys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']) &&
-             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      return data.keys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']) &&
+             data.name is string && data.name.size() <= 100 &&
              data.driverId is string && data.driverId.size() <= 128 &&
              data.assistantIds is list && data.assistantIds.size() <= 5 &&
              data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
@@ -79,58 +88,18 @@ service cloud.firestore {
     }
 
     function isValidAppUser(data) {
-      return data.keys().hasAll(['username']) &&
-             data.keys().hasOnly(['username', 'fullName', 'role', 'workGroupId', 'isActive', 'password', 'passwordHash', 'passwordSalt', 'createdAt', 'updatedAt']) &&
-             data.username is string && data.username.size() >= 1 && data.username.size() <= 100 &&
-             data.get('fullName', '') is string && data.get('fullName', '').size() <= 120 &&
-             data.get('role', 'gestion') in ['admin', 'gestion', 'supervisor', 'conductor'] &&
-             (data.get('workGroupId', null) == null || (data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128)) &&
-             data.get('isActive', true) is bool &&
-             data.get('password', '') is string && data.get('password', '').size() <= 100 &&
-             data.get('passwordHash', '') is string && data.get('passwordHash', '').size() <= 128 &&
-             data.get('passwordSalt', '') is string && data.get('passwordSalt', '').size() <= 64 &&
-             data.get('createdAt', '') is string && data.get('createdAt', '').size() <= 100 &&
-             data.get('updatedAt', '') is string && data.get('updatedAt', '').size() <= 100;
+      return data.keys().hasOnly(['username', 'password', 'createdAt']) &&
+             data.username is string && data.username.size() <= 100 &&
+             data.password is string && data.password.size() <= 100 &&
+             data.get('createdAt', '') is string && data.get('createdAt', '').size() <= 100;
     }
 
     function isValidAttendance(data) {
-      return data.keys().hasAll(['employeeId', 'date', 'status']) &&
-             data.keys().hasOnly(['employeeId', 'date', 'status', 'workGroupId']) &&
+      return data.keys().hasOnly(['employeeId', 'date', 'status', 'workGroupId']) &&
              data.employeeId is string && data.employeeId.size() <= 128 &&
              data.date is string && data.date.size() <= 20 &&
              data.status in ['OK', 'RTM', 'AUS', 'PNR', 'MED', 'PRL', 'ACC', 'INC', 'PXC', 'FAM', 'NDL', 'SAN', 'VAC', 'LCL', 'RETIRO', 'TRASLADO', 'VACANTES'] &&
              data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128;
-    }
-
-    function isValidDriverShift(data) {
-      return data.keys().hasAll(['workGroupId', 'workGroupName', 'driverId', 'driverName', 'vehicleNumber', 'date', 'status', 't1InicioTurno', 'checklistConfirmed', 'createdByUsername']) &&
-             data.keys().hasOnly([
-               'workGroupId', 'workGroupName', 'driverId', 'driverName',
-               'vehicleNumber', 'vehicleId', 'date', 'status',
-               't1InicioTurno', 't2InicioRuta', 't3FinRuta', 't4LlegadaBase',
-               'routeExecutionMs', 'totalOperationMs',
-               'checklistConfirmed', 'checklistConfirmedAt',
-               'createdByUsername', 'createdAt', 'updatedAt'
-             ]) &&
-             data.workGroupId is string && data.workGroupId.size() >= 1 && data.workGroupId.size() <= 128 &&
-             data.workGroupName is string && data.workGroupName.size() >= 1 && data.workGroupName.size() <= 100 &&
-             data.driverId is string && data.driverId.size() >= 1 && data.driverId.size() <= 128 &&
-             data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 120 &&
-             data.vehicleNumber is string && data.vehicleNumber.size() >= 1 && data.vehicleNumber.size() <= 50 &&
-             (data.get('vehicleId', null) == null || (data.get('vehicleId', '') is string && data.get('vehicleId', '').size() <= 128)) &&
-             data.date is string && data.date.size() <= 20 &&
-             data.status in ['en_turno', 'en_ruta', 'ruta_finalizada', 'completado'] &&
-             data.t1InicioTurno is string && data.t1InicioTurno.size() <= 50 &&
-             (data.get('t2InicioRuta', null) == null || (data.get('t2InicioRuta', '') is string && data.get('t2InicioRuta', '').size() <= 50)) &&
-             (data.get('t3FinRuta', null) == null || (data.get('t3FinRuta', '') is string && data.get('t3FinRuta', '').size() <= 50)) &&
-             (data.get('t4LlegadaBase', null) == null || (data.get('t4LlegadaBase', '') is string && data.get('t4LlegadaBase', '').size() <= 50)) &&
-             (data.get('routeExecutionMs', null) == null || (data.get('routeExecutionMs', 0) is number && data.get('routeExecutionMs', 0) >= 0)) &&
-             (data.get('totalOperationMs', null) == null || (data.get('totalOperationMs', 0) is number && data.get('totalOperationMs', 0) >= 0)) &&
-             data.checklistConfirmed is bool &&
-             (data.get('checklistConfirmedAt', null) == null || (data.get('checklistConfirmedAt', '') is string && data.get('checklistConfirmedAt', '').size() <= 50)) &&
-             data.createdByUsername is string && data.createdByUsername.size() <= 100 &&
-             data.get('createdAt', '') is string && data.get('createdAt', '').size() <= 50 &&
-             data.get('updatedAt', '') is string && data.get('updatedAt', '').size() <= 50;
     }
 
     match /workGroups/{id} {
@@ -172,7 +141,7 @@ service cloud.firestore {
     match /app_users/{id} {
       allow read: if true;
       allow create: if isValidId(id) && isValidAppUser(incoming());
-      allow update: if isValidId(id) && isValidAppUser(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['username', 'fullName', 'role', 'workGroupId', 'isActive', 'password', 'passwordHash', 'passwordSalt', 'updatedAt']);
+      allow update: if isValidId(id) && isValidAppUser(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['username', 'password', 'createdAt']);
       allow delete: if isValidId(id);
     }
     match /attendances/{id} {
@@ -180,20 +149,6 @@ service cloud.firestore {
       allow create: if isValidId(id) && isValidAttendance(incoming());
       allow update: if isValidId(id) && isValidAttendance(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['employeeId', 'date', 'status', 'workGroupId']);
       allow delete: if isValidId(id);
-    }
-    match /driver_shifts/{id} {
-      allow read: if true;
-      allow create: if isValidId(id) && isValidDriverShift(incoming()) && incoming().status == 'en_turno';
-      allow update: if isValidId(id) && isValidDriverShift(incoming()) && existing().status != 'completado' && (
-        (existing().checklistConfirmed == false && incoming().checklistConfirmed == true && incoming().diff(existing()).affectedKeys().hasOnly(['checklistConfirmed', 'checklistConfirmedAt', 'updatedAt'])) ||
-        (existing().status == 'en_turno' && incoming().status == 'en_ruta' && incoming().diff(existing()).affectedKeys().hasOnly(['t2InicioRuta', 'status', 'updatedAt'])) ||
-        (existing().status == 'en_ruta' && incoming().status == 'ruta_finalizada' && incoming().diff(existing()).affectedKeys().hasOnly(['t3FinRuta', 'routeExecutionMs', 'status', 'updatedAt'])) ||
-        (existing().status == 'ruta_finalizada' && incoming().status == 'completado' && incoming().diff(existing()).affectedKeys().hasOnly(['t4LlegadaBase', 'totalOperationMs', 'status', 'updatedAt']))
-      );
-      allow delete: if isValidId(id);
-    }
-    match /test/{id} {
-      allow read: if true;
     }
   }
 }

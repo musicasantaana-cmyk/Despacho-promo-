@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { exportToCsv } from '../utils/exportCsv';
 import { 
@@ -7,12 +7,11 @@ import {
   X, Clock, MapPin, Layers, Info
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
-import { Assignment, Employee, RouteDef, Vehicle, WorkGroup, Incident } from '../types';
+import { Assignment, Incident, RouteDef, Vehicle, Employee } from '../types';
 import { AttendanceIncidentsReportView } from '../components/reports/AttendanceIncidentsReportView';
 import { FleetAssetsReportView } from '../components/reports/FleetAssetsReportView';
 import { CustomExportReportView } from '../components/reports/CustomExportReportView';
 import { ReportSubMenuHeader } from '../components/reports/ReportSubMenuHeader';
-import { DateRangeExportModal } from '../components/reports/DateRangeExportModal';
 
 type ReportSubTab = 'attendance' | 'fleet' | 'export_wizard' | 'general';
 type DetailModalType = 
@@ -28,28 +27,26 @@ type DetailModalType =
   | null;
 
 export const ReportsPage: React.FC = () => {
+  // Active WorkGroup and Sub-Tabs
   const { state, setActiveWorkGroup } = useAppContext();
   const [activeTab, setActiveTab] = useState<ReportSubTab>('attendance');
   const [activeDetail, setActiveDetail] = useState<DetailModalType>(null);
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
-  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(state.activeWorkGroupId ? [state.activeWorkGroupId] : []);
   
-  // Date Range State
-  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({
-    start: new Date(new Date().setHours(0, 0, 0, 0)).toISOString().slice(0, 10),
-    end: new Date(new Date().setHours(23, 59, 59, 999)).toISOString().slice(0, 10)
-  });
-  const [showExportModal, setShowExportModal] = useState<'assignments' | 'employees' | null>(null);
+  // Real-time ticking for in-progress operations
+  const [nowMs, setNowMs] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 60000); // Update every minute
+    return () => clearInterval(timer);
+  }, []);
 
-  const toggleGroupSelection = (groupId: string) => {
-    setSelectedGroupIds(prev => 
-      prev.includes(groupId) ? prev.filter(id => id !== groupId) : [...prev, groupId]
-    );
-  };
-
-  const selectAllGroups = () => {
-    setSelectedGroupIds([]);
-  };
+  // Date filter initialized to today (YYYY-MM-DD)
+  const [selectedDate, setSelectedDate] = useState<string>(
+    new Date().toLocaleDateString('en-CA') // YYYY-MM-DD
+  );
+  const [selectedEndDate, setSelectedEndDate] = useState<string>(
+    new Date().toLocaleDateString('en-CA') // YYYY-MM-DD
+  );
 
   // Multi-route filter toggles
   const toggleRouteSelection = (routeId: string) => {
@@ -62,12 +59,12 @@ export const ReportsPage: React.FC = () => {
     setSelectedRouteIds([]);
   };
 
-  // Group routes matching current selected groups
+  // Group routes matching current active group
   const activeGroupRoutes = useMemo(() => {
-    return state.routes.filter(r => selectedGroupIds.length === 0 || (r.workGroupId && selectedGroupIds.includes(r.workGroupId)));
-  }, [state.routes, selectedGroupIds]);
+    return state.routes.filter(r => !state.activeWorkGroupId || r.workGroupId === state.activeWorkGroupId);
+  }, [state.routes, state.activeWorkGroupId]);
 
-  // Derived metrics based on active group & selected route filters
+  // Derived metrics based on active group, selected route filters & selected date range
   const metrics = useMemo(() => {
     // Filtered routes by selectedRouteIds
     const filteredRoutes = activeGroupRoutes.filter(r => 
@@ -75,15 +72,18 @@ export const ReportsPage: React.FC = () => {
     );
     const filteredRouteIds = new Set(filteredRoutes.map(r => r.id));
 
-    // Relevant assignments matching active group & selected routes
+    // Relevant assignments matching active group, selected routes, and date logic
     const relevantAssignments = state.assignments.filter(a => {
-      if (selectedGroupIds.length > 0 && (!a.workGroupId || !selectedGroupIds.includes(a.workGroupId))) return false;
+      if (state.activeWorkGroupId && a.workGroupId !== state.activeWorkGroupId) return false;
       if (selectedRouteIds.length > 0 && !selectedRouteIds.includes(a.routeId)) return false;
       
-      const assignDate = a.date.slice(0, 10);
-      if (assignDate < dateRange.start || assignDate > dateRange.end) return false;
+      const asigDate = a.date.slice(0, 10);
       
-      return true;
+      // Date logic: include if assignment date is within range OR if it's from a past date but not finished
+      const isInRange = asigDate >= selectedDate && asigDate <= selectedEndDate;
+      const isPastUnfinished = asigDate < selectedDate && !['Fin de Ruta', 'Base', 'Cancelado'].includes(a.status);
+      
+      return isInRange || isPastUnfinished;
     });
 
     // Pareto 1: Rutas Asignadas / Total Rutas Disponibles
@@ -99,7 +99,7 @@ export const ReportsPage: React.FC = () => {
 
     // Pareto 3: Vehículos Asignados / Total Vehículos Grupo
     const relevantVehicles = state.vehicles.filter(v => 
-      selectedGroupIds.length === 0 || (v.workGroupId && selectedGroupIds.includes(v.workGroupId))
+      !state.activeWorkGroupId || v.workGroupId === state.activeWorkGroupId
     );
     const totalVehiclesCount = relevantVehicles.length;
     const assignedVehicleIdsSet = new Set(relevantAssignments.map(a => a.vehicleId));
@@ -109,7 +109,7 @@ export const ReportsPage: React.FC = () => {
 
     // Pareto 4: Personal Asignado / Total Personal Grupo
     const relevantEmployees = state.employees.filter(e => 
-      selectedGroupIds.length === 0 || (e.workGroupId && selectedGroupIds.includes(e.workGroupId))
+      !state.activeWorkGroupId || e.workGroupId === state.activeWorkGroupId
     );
     const totalEmployeesCount = relevantEmployees.length;
     const assignedEmployeeIdsSet = new Set(relevantAssignments.flatMap(a => a.employeeIds || []));
@@ -180,25 +180,50 @@ export const ReportsPage: React.FC = () => {
       if (!isNaN(tBase) && tBase > latestTimeMs) latestTimeMs = tBase;
       if (!isNaN(tFin) && tFin > latestTimeMs) latestTimeMs = tFin;
 
+      // Real-time Phase Calculations
       // Phase 1: Wait time for departure (Asignación -> Salida Base)
-      const waitMins = (!isNaN(tSalida) && !isNaN(tAsig) && tSalida >= tAsig)
-        ? Math.round((tSalida - tAsig) / 60000)
-        : null;
+      let waitMins = null;
+      if (!isNaN(tAsig)) {
+        if (!isNaN(tSalida)) {
+          if (tSalida >= tAsig) waitMins = Math.round((tSalida - tAsig) / 60000);
+        } else {
+          // Waiting for departure (ongoing)
+          waitMins = Math.max(0, Math.round((nowMs - tAsig) / 60000));
+        }
+      }
 
       // Phase 2: Initial Transit (Salida Base -> Inicio Ruta)
-      const initTransitMins = (!isNaN(tInicio) && !isNaN(tSalida) && tInicio >= tSalida)
-        ? Math.round((tInicio - tSalida) / 60000)
-        : null;
+      let initTransitMins = null;
+      if (!isNaN(tSalida)) {
+        if (!isNaN(tInicio)) {
+          if (tInicio >= tSalida) initTransitMins = Math.round((tInicio - tSalida) / 60000);
+        } else {
+          // Initial Transit (ongoing)
+          initTransitMins = Math.max(0, Math.round((nowMs - tSalida) / 60000));
+        }
+      }
 
       // Phase 3: Route Execution (Inicio Ruta -> Fin Ruta)
-      const execMins = (!isNaN(tFin) && !isNaN(tInicio) && tFin >= tInicio)
-        ? Math.round((tFin - tInicio) / 60000)
-        : null;
+      let execMins = null;
+      if (!isNaN(tInicio)) {
+        if (!isNaN(tFin)) {
+          if (tFin >= tInicio) execMins = Math.round((tFin - tInicio) / 60000);
+        } else {
+          // Route Execution (ongoing)
+          execMins = Math.max(0, Math.round((nowMs - tInicio) / 60000));
+        }
+      }
 
       // Phase 4: Final Transit (Fin Ruta -> Llegada Base)
-      const finalTransitMins = (!isNaN(tBase) && !isNaN(tFin) && tBase >= tFin)
-        ? Math.round((tBase - tFin) / 60000)
-        : null;
+      let finalTransitMins = null;
+      if (!isNaN(tFin)) {
+        if (!isNaN(tBase)) {
+          if (tBase >= tFin) finalTransitMins = Math.round((tBase - tFin) / 60000);
+        } else {
+          // Final Transit (ongoing)
+          finalTransitMins = Math.max(0, Math.round((nowMs - tFin) / 60000));
+        }
+      }
 
       // Total Transit Time
       const totalTransitMins = (initTransitMins !== null || finalTransitMins !== null)
@@ -206,9 +231,15 @@ export const ReportsPage: React.FC = () => {
         : null;
 
       // Total Cycle Time (Asignación -> Base)
-      const cycleMins = (!isNaN(tBase) && !isNaN(tAsig) && tBase >= tAsig)
-        ? Math.round((tBase - tAsig) / 60000)
-        : null;
+      let cycleMins = null;
+      if (!isNaN(tAsig)) {
+        if (!isNaN(tBase)) {
+          if (tBase >= tAsig) cycleMins = Math.round((tBase - tAsig) / 60000);
+        } else {
+          // Cycle (ongoing)
+          cycleMins = Math.max(0, Math.round((nowMs - tAsig) / 60000));
+        }
+      }
 
       // Accumulate for averages
       if (waitMins !== null) { sumWaitMins += waitMins; countWait++; }
@@ -220,6 +251,13 @@ export const ReportsPage: React.FC = () => {
         ? Math.round((execMins / cycleMins) * 100)
         : null;
 
+      const formatTime = (tsStr?: string) => {
+        if (!tsStr) return '';
+        const d = new Date(tsStr);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      };
+
       return {
         assignment: a,
         waitMins,
@@ -228,7 +266,12 @@ export const ReportsPage: React.FC = () => {
         finalTransitMins,
         totalTransitMins,
         cycleMins,
-        efficiency
+        efficiency,
+        tAsigStr: formatTime(tAsigStr),
+        tSalidaStr: formatTime(tSalidaStr),
+        tInicioStr: formatTime(tInicioStr),
+        tFinStr: formatTime(tFinStr),
+        tBaseStr: formatTime(tBaseStr)
       };
     });
 
@@ -278,20 +321,60 @@ export const ReportsPage: React.FC = () => {
       avgExecMins,
       globalEfficiency
     };
-  }, [state.assignments, state.routes, state.vehicles, state.employees, selectedGroupIds, selectedRouteIds, activeGroupRoutes, dateRange]);
+  }, [state.assignments, state.routes, state.vehicles, state.employees, state.activeWorkGroupId, selectedRouteIds, activeGroupRoutes, selectedDate, selectedEndDate, nowMs]);
 
   // Export functions
-  const handleExportAssignments = (startDate: string, endDate: string) => {
-    // Already filtered by dateRange if dateRange was updated.
-    // If we want to strictly export what they just picked in the modal:
-    const toExport = state.assignments.filter(a => {
-      if (selectedGroupIds.length > 0 && (!a.workGroupId || !selectedGroupIds.includes(a.workGroupId))) return false;
-      if (selectedRouteIds.length > 0 && !selectedRouteIds.includes(a.routeId)) return false;
-      const assignDate = a.date.slice(0, 10);
-      return assignDate >= startDate && assignDate <= endDate;
+  const handleExportIndicators = () => {
+    const data = metrics.relevantAssignments.map(a => {
+      const route = state.routes.find(r => r.id === a.routeId);
+      const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
+      const group = state.workGroups.find(g => g.id === a.workGroupId);
+      const crew = state.crews.find(c => a.employeeIds.includes(c.driverId));
+      
+      const timeData = metrics.timeBreakdownAssignments.find(tb => tb.assignment.id === a.id);
+      
+      const totalNovedadesMins = (a.incidents || []).reduce((sum, inc) => {
+        if (!inc.startTime || !inc.endTime) return sum;
+        const start = new Date(inc.startTime).getTime();
+        const end = new Date(inc.endTime).getTime();
+        return sum + Math.max(0, Math.round((end - start) / 60000));
+      }, 0);
+      
+      return {
+        Fecha: a.date,
+        'Ruta (Key)': route?.name || 'N/A',
+        Grupo: group?.name || 'N/A',
+        Origen: route?.origin || 'N/A',
+        Destino: route?.destination || 'N/A',
+        'Móvil': vehicle?.internalNumber || 'N/A',
+        'ID Tripulación': crew?.name || 'Sin Tripulación',
+        Estado: a.status,
+        'Novedades (min)': totalNovedadesMins,
+        'Peso (Tons)': a.weightTons !== undefined ? a.weightTons : 0,
+        'Hora Asignación': timeData?.tAsigStr || '',
+        '1. Espera Salida (min)': timeData?.waitMins !== null ? timeData?.waitMins : '',
+        'Hora Salida Base': timeData?.tSalidaStr || '',
+        '2. Desplazamiento (min)': timeData?.totalTransitMins !== null ? timeData?.totalTransitMins : '',
+        'Hora Inicio Ejecucion': timeData?.tInicioStr || '',
+        '3. Ejecucion Ruta (min)': timeData?.execMins !== null ? timeData?.execMins : '',
+        'Hora Llegada Base': timeData?.tBaseStr || '',
+        'Ciclo Total (min)': timeData?.cycleMins !== null ? timeData?.cycleMins : '',
+        'Eficiencia (%)': timeData?.efficiency !== null ? timeData?.efficiency : ''
+      };
+    });
+    
+    // Sort by Fecha then Ruta
+    data.sort((a, b) => {
+      if (a.Fecha !== b.Fecha) return b.Fecha.localeCompare(a.Fecha);
+      return a['Ruta (Key)'].localeCompare(b['Ruta (Key)']);
     });
 
-    const data = toExport.map(a => {
+    const dateSuffix = selectedDate === selectedEndDate ? selectedDate : `${selectedDate}_to_${selectedEndDate}`;
+    exportToCsv(`indicadores_ruta_${dateSuffix}_${state.activeWorkGroupId || 'general'}.csv`, data);
+  };
+
+  const handleExportAssignments = () => {
+    const data = metrics.relevantAssignments.map(a => {
       const route = state.routes.find(r => r.id === a.routeId);
       const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
       return {
@@ -306,27 +389,17 @@ export const ReportsPage: React.FC = () => {
         'Peso (Tons)': a.weightTons !== undefined ? a.weightTons : 'N/A'
       };
     });
-    exportToCsv(`asignaciones_${startDate}_${endDate}.csv`, data);
+    exportToCsv(`asignaciones_${state.activeWorkGroupId || 'general'}_${new Date().getTime()}.csv`, data);
   };
 
-  const handleExportEmployees = (startDate: string, endDate: string) => {
-    const data = metrics.relevantEmployees.map(e => {
-      const group = state.workGroups.find(g => g.id === e.workGroupId);
-      return {
-        ID: e.id,
-        Nombre: e.name,
-        Rol: e.role,
-        Telefono: e.phone,
-        'Grupo de Trabajo': group?.name || 'General'
-      };
-    });
-    exportToCsv(`directorio_personal_${startDate}_${endDate}.csv`, data);
-  };
-
-  const executeExport = (startDate: string, endDate: string) => {
-    if (showExportModal === 'assignments') handleExportAssignments(startDate, endDate);
-    if (showExportModal === 'employees') handleExportEmployees(startDate, endDate);
-    setDateRange({ start: startDate, end: endDate });
+  const handleExportEmployees = () => {
+    const data = metrics.relevantEmployees.map(e => ({
+      ID: e.id,
+      Nombre: e.name,
+      Rol: e.role,
+      Telefono: e.phone
+    }));
+    exportToCsv(`personal_${state.activeWorkGroupId || 'general'}_${new Date().getTime()}.csv`, data);
   };
 
   const tabs: { id: ReportSubTab; label: string; icon: React.ReactNode; badge?: string }[] = [
@@ -394,14 +467,40 @@ export const ReportsPage: React.FC = () => {
           <div className="space-y-6">
             <ReportSubMenuHeader 
               workGroups={state.workGroups}
-              selectedGroupIds={selectedGroupIds}
-              onToggleGroup={toggleGroupSelection}
-              onSelectAllGroups={selectAllGroups}
+              selectedGroupIds={state.activeWorkGroupId ? [state.activeWorkGroupId] : []}
+              onToggleGroup={(id) => setActiveWorkGroup(state.activeWorkGroupId === id ? null : id)}
+              onSelectAllGroups={() => setActiveWorkGroup(null)}
               routes={activeGroupRoutes}
               selectedRouteIds={selectedRouteIds}
               onToggleRoute={toggleRouteSelection}
               onSelectAllRoutes={selectAllRoutes}
-            />
+              onExportCsv={handleExportIndicators}
+            >
+              <div className="flex flex-col sm:flex-row gap-3">
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2 flex items-center">
+                    <Clock className="h-4 w-4 mr-1.5 text-slate-400" /> Fecha Inicio
+                  </span>
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="w-full sm:w-auto bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-700 focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2 flex items-center">
+                    <Clock className="h-4 w-4 mr-1.5 text-slate-400" /> Fecha Fin
+                  </span>
+                  <input
+                    type="date"
+                    value={selectedEndDate}
+                    onChange={(e) => setSelectedEndDate(e.target.value)}
+                    className="w-full sm:w-auto bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-700 focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
+                </div>
+              </div>
+            </ReportSubMenuHeader>
 
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-xs gap-3">
               <div>
@@ -422,7 +521,24 @@ export const ReportsPage: React.FC = () => {
             </div>
 
             {/* Pareto Cards Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 flex flex-col justify-between h-36 shadow-sm hover:shadow-md transition-shadow">
+                <div className="flex justify-between items-start">
+                  <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">Peso Recolectado</span>
+                  <div className="p-2 rounded-xl bg-purple-50">
+                    <Layers className="h-6 w-6 text-purple-600" />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-baseline gap-1 text-2xl sm:text-3xl font-black text-slate-800">
+                    {metrics.totalWeightTons.toFixed(1)} <span className="text-sm font-bold text-slate-500">Ton</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px] font-bold mt-1 text-slate-500">
+                    Acumulado en rutas
+                  </div>
+                </div>
+              </div>
+
               <ParetoMetricCard 
                 title="Rutas Asignadas vs Disponibles" 
                 managedValue={metrics.assignedRoutesCount} 
@@ -575,16 +691,16 @@ export const ReportsPage: React.FC = () => {
                               <span className="font-mono bg-slate-700 px-2 py-0.5 rounded text-slate-300">Móvil {vehicle?.internalNumber || 'N/A'}</span>
                             </td>
                             <td className="p-3">
-                              {waitMins !== null ? <span className="font-bold text-amber-400">{waitMins} min</span> : <span className="text-slate-500">En espera</span>}
+                              {waitMins !== null ? <span className="font-bold text-amber-400">{waitMins} min</span> : <span className="text-slate-600">-</span>}
                             </td>
                             <td className="p-3">
-                              {totalTransitMins !== null ? <span className="font-bold text-blue-400">{totalTransitMins} min</span> : <span className="text-slate-500">En tránsito</span>}
+                              {totalTransitMins !== null ? <span className="font-bold text-blue-400">{totalTransitMins} min</span> : <span className="text-slate-600">-</span>}
                             </td>
                             <td className="p-3">
-                              {execMins !== null ? <span className="font-bold text-emerald-400">{execMins} min</span> : <span className="text-slate-500">En servicio</span>}
+                              {execMins !== null ? <span className="font-bold text-emerald-400">{execMins} min</span> : <span className="text-slate-600">-</span>}
                             </td>
                             <td className="p-3">
-                              {cycleMins !== null ? <span className="font-bold text-white">{cycleMins} min</span> : <span className="text-slate-500">--</span>}
+                              {cycleMins !== null ? <span className="font-bold text-white">{cycleMins} min</span> : <span className="text-slate-600">-</span>}
                             </td>
                             <td className="p-3 text-right">
                               {efficiency !== null ? (
@@ -709,7 +825,7 @@ export const ReportsPage: React.FC = () => {
                   Descargue el historial de asignaciones, rutas y novedades registradas en el filtro actual.
                 </p>
                 <button 
-                  onClick={() => setShowExportModal('assignments')}
+                  onClick={handleExportAssignments}
                   className="w-full flex items-center justify-center bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl py-3 text-sm font-bold transition-colors"
                 >
                   <Download className="h-4 w-4 mr-2" />
@@ -726,7 +842,7 @@ export const ReportsPage: React.FC = () => {
                   Descargue el listado completo de empleados, incluyendo conductores, ayudantes y coordinadores.
                 </p>
                 <button 
-                  onClick={() => setShowExportModal('employees')}
+                  onClick={handleExportEmployees}
                   className="w-full flex items-center justify-center bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-xl py-3 text-sm font-bold transition-colors"
                 >
                   <Download className="h-4 w-4 mr-2" />
@@ -975,13 +1091,6 @@ export const ReportsPage: React.FC = () => {
           </div>
         )}
       </div>
-      {/* Export Modal */}
-      <DateRangeExportModal
-        isOpen={showExportModal !== null}
-        onClose={() => setShowExportModal(null)}
-        onExport={executeExport}
-        title={showExportModal === 'assignments' ? 'Exportar Asignaciones' : 'Exportar Directorio'}
-      />
     </div>
   );
 };
