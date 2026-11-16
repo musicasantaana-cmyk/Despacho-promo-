@@ -63,7 +63,8 @@
         "date": { "type": "string", "maxLength": 50 },
         "status": { "type": "string", "enum": ["Pendiente", "Salida de Base", "Inicio de Ruta", "Fin de Ruta", "Relleno", "Base", "Cancelado"] },
         "incidents": { "type": "array" },
-        "workGroupId": { "type": "string", "maxLength": 128 }
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "weightTons": { "type": "number" }
       },
       "required": ["routeId", "vehicleId", "employeeIds", "date", "status"]
     },
@@ -81,14 +82,60 @@
     },
     "AppUser": {
       "title": "AppUser",
-      "description": "An application user with username and password.",
+      "description": "An application user with RBAC role, group assignment, and hashed credentials.",
       "type": "object",
       "properties": {
         "username": { "type": "string", "maxLength": 100 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["admin", "gestion", "supervisor", "conductor"] },
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "isActive": { "type": "boolean" },
         "password": { "type": "string", "maxLength": 100 },
-        "createdAt": { "type": "string", "maxLength": 100 }
+        "passwordHash": { "type": "string", "maxLength": 128 },
+        "passwordSalt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "maxLength": 100 }
       },
-      "required": ["username", "password"]
+      "required": ["username", "role", "isActive"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Daily employee attendance and novelty record.",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["OK", "RTM", "AUS", "PNR", "MED", "PRL", "ACC", "INC", "PXC", "FAM", "NDL", "SAN", "VAC", "LCL", "RETIRO", "TRASLADO", "VACANTES"] },
+        "workGroupId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["employeeId", "date", "status"]
+    },
+    "DriverShift": {
+      "title": "DriverShift",
+      "description": "Operational shift time tracking for drivers (T1-T4).",
+      "type": "object",
+      "properties": {
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "workGroupName": { "type": "string", "maxLength": 100 },
+        "driverId": { "type": "string", "maxLength": 128 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "vehicleNumber": { "type": "string", "maxLength": 50 },
+        "vehicleId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["en_turno", "en_ruta", "ruta_finalizada", "completado"] },
+        "t1InicioTurno": { "type": "string", "maxLength": 50 },
+        "t2InicioRuta": { "type": "string", "maxLength": 50 },
+        "t3FinRuta": { "type": "string", "maxLength": 50 },
+        "t4LlegadaBase": { "type": "string", "maxLength": 50 },
+        "routeExecutionMs": { "type": "number" },
+        "totalOperationMs": { "type": "number" },
+        "checklistConfirmed": { "type": "boolean" },
+        "checklistConfirmedAt": { "type": "string", "maxLength": 50 },
+        "createdByUsername": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["workGroupId", "workGroupName", "driverId", "driverName", "vehicleNumber", "date", "status", "t1InicioTurno", "checklistConfirmed", "createdByUsername"]
     }
   },
   "firestore": {
@@ -118,7 +165,15 @@
     },
     "app_users": {
       "schema": "AppUser",
-      "description": "Stores authorized application users."
+      "description": "Stores authorized application users with RBAC roles and group assignments."
+    },
+    "attendances": {
+      "schema": "Attendance",
+      "description": "Stores employee daily attendance records."
+    },
+    "driver_shifts": {
+      "schema": "DriverShift",
+      "description": "Stores driver operational shift timelines (T1-T4) and calculated durations."
     }
   }
 }

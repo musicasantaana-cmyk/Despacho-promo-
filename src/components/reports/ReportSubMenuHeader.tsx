@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layers, MoreVertical, Download, MapPin } from 'lucide-react';
+import { Layers, MoreVertical, Download, MapPin, Lock } from 'lucide-react';
 import { WorkGroup, RouteDef } from '../../types';
+import { useAuth } from '../../context/AuthContext';
 
 interface Props {
   workGroups: WorkGroup[];
@@ -20,6 +21,7 @@ export const ReportSubMenuHeader: React.FC<Props> = ({
   routes, selectedRouteIds = [], onToggleRoute, onSelectAllRoutes,
   onExportCsv, children
 }) => {
+  const { isSupervisor } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -40,35 +42,44 @@ export const ReportSubMenuHeader: React.FC<Props> = ({
         <div className="flex-1 w-full">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center">
-              <Layers className="h-4 w-4 mr-1.5 text-slate-400" /> Filtro de Grupos
+              <Layers className="h-4 w-4 mr-1.5 text-slate-400" /> {isSupervisor ? 'Grupo Asignado' : 'Filtro de Grupos'}
             </span>
-            <button
-              onClick={onSelectAllGroups}
-              className={`text-xs font-bold transition-colors ${
-                selectedGroupIds.length === 0 ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              {selectedGroupIds.length === 0 ? '✓ Todos los grupos' : 'Seleccionar todos'}
-            </button>
+            {!isSupervisor && (
+              <button
+                onClick={onSelectAllGroups}
+                className={`text-xs font-bold transition-colors ${
+                  selectedGroupIds.length === 0 ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600'
+                }`}
+              >
+                {selectedGroupIds.length === 0 ? '✓ Todos los grupos' : 'Seleccionar todos'}
+              </button>
+            )}
           </div>
-          <div className="flex flex-wrap gap-2">
-            {workGroups.map(wg => {
-              const isSelected = selectedGroupIds.includes(wg.id);
-              return (
-                <button
-                  key={wg.id}
-                  onClick={() => onToggleGroup(wg.id)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                    isSelected
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm'
-                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  {wg.name}
-                </button>
-              );
-            })}
-          </div>
+          {isSupervisor ? (
+            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+              <Lock className="w-3.5 h-3.5" />
+              <span>{workGroups[0]?.name || 'Grupo Asignado'}</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {workGroups.map(wg => {
+                const isSelected = selectedGroupIds.includes(wg.id);
+                return (
+                  <button
+                    key={wg.id}
+                    onClick={() => onToggleGroup(wg.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                      isSelected
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm'
+                        : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    {wg.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {children && (

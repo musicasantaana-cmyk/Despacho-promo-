@@ -5,17 +5,19 @@
 
 import React, { useState, useEffect } from 'react';
 import { AppProvider } from './context/AppContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Layout } from './components/Layout';
 import { AdminPage } from './pages/AdminPage';
 import { AssignmentPage } from './pages/AssignmentPage';
 import { TrackingPage } from './pages/TrackingPage';
 import { ReportsPage } from './pages/ReportsPage';
-import { authenticateAppUser } from './lib/firebase';
+import { DriversPage } from './pages/DriversPage';
+import { UsersAdminPage } from './pages/UsersAdminPage';
 
-export default function App() {
-  const [currentView, setCurrentView] = useState('tracking');
-  const [user, setUser] = useState<{ username: string } | null>(null);
-  const [loading, setLoading] = useState(true);
+function AppShell() {
+  const { user, loading, login, logout, isAdmin, isConductor, canAccessModule, getDefaultViewForRole } = useAuth();
+  const [currentView, setCurrentView] = useState<string>('tracking');
 
   // Login State
   const [username, setUsername] = useState('');
@@ -23,32 +25,23 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // Enforce role-appropriate default and allowed views whenever user changes
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('PROMO_USER_SESSION');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.username) {
-          setUser(parsed);
-        }
-      }
-    } catch (e) {
-      console.error('Error loading session', e);
+    if (!user) return;
+    if (!canAccessModule(currentView)) {
+      setCurrentView(getDefaultViewForRole(user.role));
     }
-    setLoading(false);
-  }, []);
+  }, [user, currentView, canAccessModule, getDefaultViewForRole]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     setIsLoggingIn(true);
-    
+
     try {
-      const result = await authenticateAppUser(username, password);
-      if (result.success) {
-        const sessionData = { username: result.username, loggedAt: Date.now() };
-        localStorage.setItem('PROMO_USER_SESSION', JSON.stringify(sessionData));
-        setUser(sessionData);
+      const result = await login(username, password);
+      if (result.success && result.session) {
+        setCurrentView(getDefaultViewForRole(result.session.role));
         setUsername('');
         setPassword('');
       } else {
@@ -62,15 +55,10 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('PROMO_USER_SESSION');
-    setUser(null);
-  };
-
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+        <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -81,19 +69,26 @@ export default function App() {
         <div className="bg-slate-800 p-8 rounded-2xl max-w-sm w-full shadow-2xl border border-slate-700 text-center">
           <div className="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-6">
             <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+              />
             </svg>
           </div>
           <h1 className="text-2xl font-bold mb-2">Promoambiental</h1>
-          <p className="text-sm text-slate-400 mb-6">Sistema Central de Despacho. Inicie sesión para continuar.</p>
-          
+          <p className="text-sm text-slate-400 mb-6">
+            Sistema Central de Despacho. Inicie sesión para continuar.
+          </p>
+
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <input
                 type="text"
-                placeholder="Usuario (ej: wefd)"
+                placeholder="Usuario"
                 value={username}
-                onChange={e => setUsername(e.target.value)}
+                onChange={(e) => setUsername(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 outline-none"
                 required
               />
@@ -103,7 +98,7 @@ export default function App() {
                 type="password"
                 placeholder="Contraseña"
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 outline-none"
                 required
               />
@@ -124,13 +119,30 @@ export default function App() {
 
   return (
     <AppProvider>
-      <Layout currentView={currentView} onViewChange={setCurrentView} onLogout={handleLogout}>
-        {currentView === 'admin' && <AdminPage />}
-        {currentView === 'assign' && <AssignmentPage />}
-        {currentView === 'tracking' && <TrackingPage />}
-        {currentView === 'reports' && <ReportsPage />}
+      <Layout currentView={currentView} onViewChange={setCurrentView} onLogout={logout}>
+        {isConductor ? (
+          <DriversPage />
+        ) : (
+          <>
+            {currentView === 'admin' && canAccessModule('admin') && <AdminPage />}
+            {currentView === 'assign' && canAccessModule('assign') && <AssignmentPage />}
+            {currentView === 'tracking' && canAccessModule('tracking') && <TrackingPage />}
+            {currentView === 'reports' && canAccessModule('reports') && <ReportsPage />}
+            {currentView === 'drivers' && canAccessModule('drivers') && <DriversPage />}
+            {currentView === 'users' && isAdmin && <UsersAdminPage />}
+          </>
+        )}
       </Layout>
     </AppProvider>
   );
 }
 
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppShell />
+      </AuthProvider>
+    </ErrorBoundary>
+  );
+}

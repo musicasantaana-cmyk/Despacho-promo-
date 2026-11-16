@@ -3,6 +3,35 @@ export type VehicleStatus = 'Operativo' | 'Inoperativo';
 export type AssignmentStatus = 'Pendiente' | 'Salida de Base' | 'Inicio de Ruta' | 'Fin de Ruta' | 'Relleno' | 'Base' | 'Cancelado';
 export type IncidentType = 'Retraso' | 'Mecánico' | 'Personal' | 'Clima' | 'Otro';
 
+export type UserRole = 'admin' | 'gestion' | 'supervisor' | 'conductor';
+
+export const USER_ROLE_META: Record<UserRole, { level: number; label: string; shortLabel: string; description: string }> = {
+  admin: {
+    level: 1,
+    label: 'Nivel 1 · Administrador',
+    shortLabel: 'Administrador',
+    description: 'Acceso total: ver, crear, editar, eliminar y configurar toda la aplicación, incluyendo gestión de usuarios.'
+  },
+  gestion: {
+    level: 2,
+    label: 'Nivel 2 · Admin. de Gestión',
+    shortLabel: 'Gestión',
+    description: 'Puede ver, agregar y modificar registros y operaciones, excepto configuración global y panel de usuarios.'
+  },
+  supervisor: {
+    level: 3,
+    label: 'Nivel 3 · Supervisor',
+    shortLabel: 'Supervisor',
+    description: 'Acceso segmentado exclusivamente a los datos y operaciones de su grupo operativo asignado.'
+  },
+  conductor: {
+    level: 4,
+    label: 'Nivel 4 · Conductor',
+    shortLabel: 'Conductor',
+    description: 'Acceso restringido únicamente al módulo de Conductores para control de tiempos operativos.'
+  }
+};
+
 export interface WorkGroup {
   id: string;
   name: string;
@@ -115,6 +144,31 @@ export interface Attendance {
   workGroupId?: string;
 }
 
+export type DriverShiftStatus = 'en_turno' | 'en_ruta' | 'ruta_finalizada' | 'completado';
+
+export interface DriverShift {
+  id: string;
+  workGroupId: string;
+  workGroupName: string;
+  driverId: string;
+  driverName: string;
+  vehicleNumber: string;
+  vehicleId?: string | null;
+  date: string; // YYYY-MM-DD
+  status: DriverShiftStatus;
+  t1InicioTurno: string; // ISO string
+  t2InicioRuta?: string | null;
+  t3FinRuta?: string | null;
+  t4LlegadaBase?: string | null;
+  routeExecutionMs?: number | null; // T3 - T2
+  totalOperationMs?: number | null; // T4 - T1
+  checklistConfirmed: boolean;
+  checklistConfirmedAt?: string | null;
+  createdByUsername: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface AppState {
   workGroups: WorkGroup[];
   activeWorkGroupId: string | null;
@@ -124,6 +178,7 @@ export interface AppState {
   assignments: Assignment[];
   crews: CrewTemplate[];
   attendances: Attendance[];
+  driverShifts: DriverShift[];
   backupEmail: string | null;
   lastBackupDate: string | null;
 }
@@ -141,7 +196,36 @@ export interface SyncStatus {
 export interface AppUser {
   id: string;
   username: string;
+  fullName?: string;
+  role?: UserRole;
+  workGroupId?: string | null;
+  isActive?: boolean;
   password?: string;
+  passwordHash?: string;
+  passwordSalt?: string;
   createdAt?: string;
+  updatedAt?: string;
 }
 
+export interface SafeAppUser {
+  id: string;
+  username: string;
+  fullName?: string;
+  role: UserRole;
+  workGroupId: string | null;
+  isActive: boolean;
+  isMaster?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AuthSession {
+  id: string;
+  username: string;
+  fullName?: string;
+  role: UserRole;
+  workGroupId: string | null;
+  isActive: boolean;
+  isMaster?: boolean;
+  loggedAt: number;
+}
