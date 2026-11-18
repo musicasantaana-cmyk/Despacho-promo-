@@ -81,14 +81,61 @@
     },
     "AppUser": {
       "title": "AppUser",
-      "description": "An application user with username and password.",
+      "description": "An application user with RBAC role and work group binding.",
       "type": "object",
       "properties": {
         "username": { "type": "string", "maxLength": 100 },
-        "password": { "type": "string", "maxLength": 100 },
-        "createdAt": { "type": "string", "maxLength": 100 }
+        "password": { "type": "string", "maxLength": 256 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["admin", "gestion", "supervisor", "conductor"] },
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "maxLength": 100 }
       },
-      "required": ["username", "password"]
+      "required": ["username", "password", "role"]
+    },
+    "DriverShift": {
+      "title": "DriverShift",
+      "description": "Operational time control log recorded by a driver during a shift.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "maxLength": 20 },
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "workGroupName": { "type": "string", "maxLength": 100 },
+        "driverId": { "type": "string", "maxLength": 128 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "vehicleNumber": { "type": "string", "maxLength": 50 },
+        "vehicleId": { "type": "string", "maxLength": 128 },
+        "createdByUserId": { "type": "string", "maxLength": 128 },
+        "createdByUsername": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["EN_TURNO", "EN_RUTA", "FIN_RUTA", "EN_BASE"] },
+        "checklistConfirmed": { "type": "boolean" },
+        "checklistConfirmedAt": { "type": "string", "maxLength": 50 },
+        "t1StartShiftAt": { "type": "string", "maxLength": 50 },
+        "t2StartRouteAt": { "type": "string", "maxLength": 50 },
+        "t3EndRouteAt": { "type": "string", "maxLength": 50 },
+        "t4ArriveBaseAt": { "type": "string", "maxLength": 50 },
+        "isPausedForRefill": { "type": "boolean" },
+        "activeRefillId": { "type": "string", "maxLength": 128 },
+        "pausedPhase": { "type": "string", "maxLength": 30 },
+        "refillEvents": { "type": "array" },
+        "isInBreakdown": { "type": "boolean" },
+        "activeBreakdownId": { "type": "string", "maxLength": 128 },
+        "breakdownEvents": { "type": "array" },
+        "initialTransitMins": { "type": "number" },
+        "routeExecutionMins": { "type": "number" },
+        "routeExecutionNetMins": { "type": "number" },
+        "returnTransitMins": { "type": "number" },
+        "totalOperationMins": { "type": "number" },
+        "totalOperationNetMins": { "type": "number" },
+        "refillTotalMins": { "type": "number" },
+        "mechanicalBreakdownTotalMins": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["date", "workGroupId", "driverId", "driverName", "vehicleNumber", "createdByUserId", "status", "t1StartShiftAt"]
     }
   },
   "firestore": {
@@ -118,7 +165,11 @@
     },
     "app_users": {
       "schema": "AppUser",
-      "description": "Stores authorized application users."
+      "description": "Stores authorized application users with RBAC roles and group assignments."
+    },
+    "driver_shifts": {
+      "schema": "DriverShift",
+      "description": "Stores driver operational time shifts, pauses, and mechanical breakdowns."
     }
   }
 }

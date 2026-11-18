@@ -1,7 +1,21 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { AppState, Employee, EmployeeRole, Vehicle, RouteDef, Assignment, Incident, WorkGroup, CrewTemplate, SyncStatus, Attendance } from '../types';
-import { db, auth } from '../lib/firebase';
+import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import {
+  AppState,
+  Employee,
+  EmployeeRole,
+  Vehicle,
+  RouteDef,
+  Assignment,
+  Incident,
+  WorkGroup,
+  CrewTemplate,
+  SyncStatus,
+  Attendance,
+  DriverShift,
+} from '../types';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot, writeBatch } from 'firebase/firestore';
+import { useAuth } from './AuthContext';
 
 interface AppContextProps {
   state: AppState;
@@ -43,6 +57,7 @@ const defaultState: AppState = {
   assignments: [],
   crews: [],
   attendances: [],
+  driverShifts: [],
   backupEmail: null,
   lastBackupDate: null,
 };
@@ -52,13 +67,14 @@ const AppContext = createContext<AppContextProps | undefined>(undefined);
 const generateId = () => Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [state, setState] = useState<AppState>(() => {
-    // Try to load active group & backup preferences from local storage
+  const { user, canManageAllGroups, lockedWorkGroupId, isConductor } = useAuth();
+
+  const [rawState, setRawState] = useState<AppState>(() => {
     const active = localStorage.getItem('PROMO_ACTIVE_GROUP');
     const backupEmail = localStorage.getItem('PROMO_BACKUP_EMAIL');
     const lastBackupDate = localStorage.getItem('PROMO_LAST_BACKUP');
-    return { 
-      ...defaultState, 
+    return {
+      ...defaultState,
       activeWorkGroupId: active || null,
       backupEmail: backupEmail || null,
       lastBackupDate: lastBackupDate || null,
@@ -70,80 +86,195 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     isSyncing: false,
     lastSyncTime: null,
     latencyInterval: 15,
-    serverVersion: 2,
+    serverVersion: 3,
     deviceId: 'FB-SYNC-' + Math.random().toString(36).substring(2, 6).toUpperCase(),
     syncProtocol: 'Firestore Realtime',
   });
 
   useEffect(() => {
+    if (!user) return;
     setSyncStatus(prev => ({ ...prev, isOnline: true }));
 
-    const unsubWorkGroups = onSnapshot(collection(db, 'workGroups'), snap => {
-      const docs = snap.docs.map(d => ({ ...d.data(), id: d.id } as WorkGroup));
-      setState(prev => {
-        let nextActive = prev.activeWorkGroupId;
-        if (!nextActive && docs.length > 0) nextActive = docs[0].id;
-        if (nextActive && !docs.find(g => g.id === nextActive)) nextActive = docs.length > 0 ? docs[0].id : null;
-        if (nextActive) localStorage.setItem('PROMO_ACTIVE_GROUP', nextActive);
-        return { ...prev, workGroups: docs, activeWorkGroupId: nextActive };
-      });
-      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-    }, (err) => console.error("Firestore error workGroups", err));
+    const unsubWorkGroups = onSnapshot(
+      collection(db, 'workGroups'),
+      snap => {
+        const docs = snap.docs.map(d => ({ ...d.data(), id: d.id } as WorkGroup));
+        setRawState(prev => {
+          let nextActive = lockedWorkGroupId || prev.activeWorkGroupId;
+          if (!nextActive && docs.length > 0) nextActive = docs[0].id;
+          if (nextActive && !docs.find(g => g.id === nextActive)) {
+            nextActive = lockedWorkGroupId || (docs.length > 0 ? docs[0].id : null);
+          }
+          if (nextActive) localStorage.setItem('PROMO_ACTIVE_GROUP', nextActive);
+          return { ...prev, workGroups: docs, activeWorkGroupId: nextActive };
+        });
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error workGroups', err);
+        try {
+          handleFirestoreError(err, OperationType.LIST, 'workGroups');
+        } catch {}
+      }
+    );
 
-    const unsubEmployees = onSnapshot(collection(db, 'employees'), snap => {
-      setState(prev => ({ ...prev, employees: snap.docs.map(d => ({ ...d.data(), id: d.id } as Employee)) }));
-      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-    }, (err) => console.error("Firestore error employees", err));
+    const unsubEmployees = onSnapshot(
+      collection(db, 'employees'),
+      snap => {
+        setRawState(prev => ({ ...prev, employees: snap.docs.map(d => ({ ...d.data(), id: d.id } as Employee)) }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error employees', err);
+      }
+    );
 
-    const unsubVehicles = onSnapshot(collection(db, 'vehicles'), snap => {
-      setState(prev => ({ ...prev, vehicles: snap.docs.map(d => ({ ...d.data(), id: d.id } as Vehicle)) }));
-      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-    }, (err) => console.error("Firestore error vehicles", err));
+    const unsubVehicles = onSnapshot(
+      collection(db, 'vehicles'),
+      snap => {
+        setRawState(prev => ({ ...prev, vehicles: snap.docs.map(d => ({ ...d.data(), id: d.id } as Vehicle)) }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error vehicles', err);
+      }
+    );
 
-    const unsubRoutes = onSnapshot(collection(db, 'routes'), snap => {
-      setState(prev => ({ ...prev, routes: snap.docs.map(d => ({ ...d.data(), id: d.id } as RouteDef)) }));
-      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-    }, (err) => console.error("Firestore error routes", err));
+    const unsubRoutes = onSnapshot(
+      collection(db, 'routes'),
+      snap => {
+        setRawState(prev => ({ ...prev, routes: snap.docs.map(d => ({ ...d.data(), id: d.id } as RouteDef)) }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error routes', err);
+      }
+    );
 
-    const unsubAssignments = onSnapshot(collection(db, 'assignments'), snap => {
-      setState(prev => ({ ...prev, assignments: snap.docs.map(d => {
-        const data = d.data();
-        let finalData = { ...data, id: d.id } as Assignment;
-        const metaIncident = finalData.incidents?.find(i => i.id === 'SYS_META');
-        if (metaIncident) {
-          try {
-            const meta = JSON.parse(metaIncident.description);
-            finalData = { ...finalData, ...meta, incidents: finalData.incidents.filter(i => i.id !== 'SYS_META') };
-          } catch(e) {}
-        }
-        return finalData;
-      }) }));
-      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-    }, (err) => console.error("Firestore error assignments", err));
+    const unsubAssignments = onSnapshot(
+      collection(db, 'assignments'),
+      snap => {
+        setRawState(prev => ({
+          ...prev,
+          assignments: snap.docs.map(d => {
+            const data = d.data();
+            let finalData = { ...data, id: d.id } as Assignment;
+            const metaIncident = finalData.incidents?.find(i => i.id === 'SYS_META');
+            if (metaIncident) {
+              try {
+                const meta = JSON.parse(metaIncident.description);
+                finalData = { ...finalData, ...meta, incidents: finalData.incidents.filter(i => i.id !== 'SYS_META') };
+              } catch {}
+            }
+            return finalData;
+          }),
+        }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error assignments', err);
+      }
+    );
 
-    const unsubCrews = onSnapshot(collection(db, 'crews'), snap => {
-      setState(prev => ({ ...prev, crews: snap.docs.map(d => ({ ...d.data(), id: d.id } as CrewTemplate)) }));
-      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-    }, (err) => console.error("Firestore error crews", err));
+    const unsubCrews = onSnapshot(
+      collection(db, 'crews'),
+      snap => {
+        setRawState(prev => ({ ...prev, crews: snap.docs.map(d => ({ ...d.data(), id: d.id } as CrewTemplate)) }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error crews', err);
+      }
+    );
 
-    const unsubAttendances = onSnapshot(collection(db, 'attendances'), snap => {
-      setState(prev => ({ ...prev, attendances: snap.docs.map(d => ({ ...d.data(), id: d.id } as Attendance)) }));
-      setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-    }, (err) => console.error("Firestore error attendances", err));
+    const unsubAttendances = onSnapshot(
+      collection(db, 'attendances'),
+      snap => {
+        setRawState(prev => ({ ...prev, attendances: snap.docs.map(d => ({ ...d.data(), id: d.id } as Attendance)) }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error attendances', err);
+      }
+    );
+
+    const unsubDriverShifts = onSnapshot(
+      collection(db, 'driver_shifts'),
+      snap => {
+        const docs = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as DriverShift))
+          .sort((a, b) => (b.t1StartShiftAt || '').localeCompare(a.t1StartShiftAt || ''));
+        setRawState(prev => ({ ...prev, driverShifts: docs }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error driver_shifts', err);
+      }
+    );
 
     return () => {
-      unsubWorkGroups(); unsubEmployees(); unsubVehicles(); unsubRoutes(); unsubAssignments(); unsubCrews(); unsubAttendances();
+      unsubWorkGroups();
+      unsubEmployees();
+      unsubVehicles();
+      unsubRoutes();
+      unsubAssignments();
+      unsubCrews();
+      unsubAttendances();
+      unsubDriverShifts();
     };
-  }, []);
+  }, [user, lockedWorkGroupId]);
+
+  // Enforce RBAC & Group Isolation on the exposed state
+  const state = useMemo<AppState>(() => {
+    if (!user) return defaultState;
+
+    if (lockedWorkGroupId) {
+      const lockedGroup = rawState.workGroups.find(wg => wg.id === lockedWorkGroupId);
+      const lockedGroupName = lockedGroup?.name?.trim().toLowerCase();
+
+      const matchesGroup = (wgId?: string, legacyWgName?: string) => {
+        if (wgId === lockedWorkGroupId) return true;
+        if (!wgId && legacyWgName && lockedGroupName && legacyWgName.trim().toLowerCase() === lockedGroupName) return true;
+        return false;
+      };
+
+      const filteredShifts = rawState.driverShifts
+        .filter(s => s.workGroupId === lockedWorkGroupId)
+        .filter(s => !isConductor || s.createdByUserId === user.id || (user.employeeId && s.driverId === user.employeeId));
+
+      return {
+        ...rawState,
+        workGroups: rawState.workGroups.filter(wg => wg.id === lockedWorkGroupId),
+        activeWorkGroupId: lockedWorkGroupId,
+        employees: rawState.employees.filter(e => matchesGroup(e.workGroupId, e.workGroup)),
+        vehicles: rawState.vehicles.filter(v => v.workGroupId === lockedWorkGroupId),
+        routes: rawState.routes.filter(r => r.workGroupId === lockedWorkGroupId),
+        assignments: rawState.assignments.filter(a => a.workGroupId === lockedWorkGroupId),
+        crews: rawState.crews.filter(c => c.workGroupId === lockedWorkGroupId),
+        attendances: rawState.attendances.filter(att => att.workGroupId === lockedWorkGroupId),
+        driverShifts: filteredShifts,
+      };
+    }
+
+    if (isConductor) {
+      return {
+        ...rawState,
+        driverShifts: rawState.driverShifts.filter(
+          s => s.createdByUserId === user.id || (user.employeeId && s.driverId === user.employeeId)
+        ),
+      };
+    }
+
+    return rawState;
+  }, [rawState, user, lockedWorkGroupId, isConductor]);
 
   const syncNow = async () => {
     setSyncStatus(prev => ({ ...prev, isSyncing: true }));
-    // Realtime listener handles updates automatically; simulate brief sync indicator
     await new Promise(r => setTimeout(r, 400));
-    setSyncStatus(prev => ({ 
-      ...prev, 
-      isSyncing: false, 
-      lastSyncTime: new Date().toLocaleTimeString() 
+    setSyncStatus(prev => ({
+      ...prev,
+      isSyncing: false,
+      lastSyncTime: new Date().toLocaleTimeString(),
     }));
   };
 
@@ -153,66 +284,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const setBackupEmail = (email: string) => {
     localStorage.setItem('PROMO_BACKUP_EMAIL', email);
-    setState(prev => ({ ...prev, backupEmail: email }));
+    setRawState(prev => ({ ...prev, backupEmail: email }));
   };
 
   const triggerManualBackup = () => {
     const now = new Date().toISOString();
     localStorage.setItem('PROMO_LAST_BACKUP', now);
-    setState(prev => ({ ...prev, lastBackupDate: now }));
+    setRawState(prev => ({ ...prev, lastBackupDate: now }));
   };
 
   const setActiveWorkGroup = (id: string | null) => {
+    if (lockedWorkGroupId) {
+      localStorage.setItem('PROMO_ACTIVE_GROUP', lockedWorkGroupId);
+      setRawState(prev => ({ ...prev, activeWorkGroupId: lockedWorkGroupId }));
+      return;
+    }
     if (id) {
       localStorage.setItem('PROMO_ACTIVE_GROUP', id);
     } else {
       localStorage.removeItem('PROMO_ACTIVE_GROUP');
     }
-    setState(prev => ({ ...prev, activeWorkGroupId: id }));
+    setRawState(prev => ({ ...prev, activeWorkGroupId: id }));
   };
 
   const addWorkGroup = async (name: string) => {
+    if (!canManageAllGroups) return;
     try {
       const docRef = doc(collection(db, 'workGroups'));
       await setDoc(docRef, { name });
       setActiveWorkGroup(docRef.id);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const deleteWorkGroup = async (id: string) => {
-    try { await deleteDoc(doc(db, 'workGroups', id)); } catch (e) { console.error(e); }
+    if (!canManageAllGroups) return;
+    try {
+      await deleteDoc(doc(db, 'workGroups', id));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const resolveScopedWorkGroupId = (requestedId?: string) => {
+    if (lockedWorkGroupId) return lockedWorkGroupId;
+    return requestedId || state.activeWorkGroupId || '';
   };
 
   const addEmployee = async (emp: Omit<Employee, 'id'>) => {
     try {
       const docRef = doc(collection(db, 'employees'));
-      await setDoc(docRef, { ...emp, workGroupId: emp.workGroupId || state.activeWorkGroupId || '' });
-    } catch (e) { console.error(e); }
+      await setDoc(docRef, { ...emp, workGroupId: resolveScopedWorkGroupId(emp.workGroupId) });
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updateEmployee = async (id: string, emp: Partial<Employee>) => {
-    try { await updateDoc(doc(db, 'employees', id), emp); } catch (e) { console.error(e); }
+    try {
+      const safeEmp = lockedWorkGroupId ? { ...emp, workGroupId: lockedWorkGroupId } : emp;
+      await updateDoc(doc(db, 'employees', id), safeEmp);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const deleteEmployee = async (id: string) => {
-    try { await deleteDoc(doc(db, 'employees', id)); } catch (e) { console.error(e); }
+    try {
+      await deleteDoc(doc(db, 'employees', id));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const deleteAllEmployees = async () => {
+    if (!canManageAllGroups) return;
     try {
       const batch = writeBatch(db);
       state.employees.forEach(e => batch.delete(doc(db, 'employees', e.id)));
       await batch.commit();
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const importEmployeesBulk = async (rawRows: any[]) => {
     try {
       const batch = writeBatch(db);
-      let currentWorkGroups = [...state.workGroups];
-      
+      let currentWorkGroups = [...rawState.workGroups];
+
       const normalizeRole = (val: any): EmployeeRole => {
-        const str = String(val || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+        const str = String(val || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
         if (str.includes('conduct') || str.includes('chofer') || str.includes('driver')) return 'Conductor';
         if (str.includes('ayud') || str.includes('auxil') || str.includes('peon') || str.includes('asist')) return 'Ayudante';
         if (str.includes('coord') || str.includes('superv') || str.includes('lider') || str.includes('jefe') || str.includes('admin')) return 'Coordinador';
@@ -227,9 +390,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const phone = String(row.telefono || row.telefonos || row.celular || row.tel || row.phone || row.movil || '').trim();
         const rawGroup = String(row.grupo || row.grupos || row.group || row.area || row.zona || '').trim();
 
-        let assignedGroupId = state.activeWorkGroupId || '';
+        let assignedGroupId = lockedWorkGroupId || state.activeWorkGroupId || '';
 
-        if (rawGroup) {
+        if (!lockedWorkGroupId && rawGroup) {
           let foundGroup = currentWorkGroups.find(g => g.name.trim().toLowerCase() === rawGroup.toLowerCase());
           if (!foundGroup) {
             const wgRef = doc(collection(db, 'workGroups'));
@@ -244,8 +407,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const empRef = doc(collection(db, 'employees'));
         batch.set(empRef, {
           name: fullName,
-          firstName: firstName,
-          lastName: lastName,
+          firstName,
+          lastName,
           role,
           phone,
           workGroup: rawGroup,
@@ -253,62 +416,97 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
       await batch.commit();
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const addVehicle = async (veh: Omit<Vehicle, 'id'>) => {
     try {
       const docRef = doc(collection(db, 'vehicles'));
-      await setDoc(docRef, { ...veh, workGroupId: veh.workGroupId || state.activeWorkGroupId || '' });
-    } catch (e) { console.error(e); }
+      await setDoc(docRef, { ...veh, workGroupId: resolveScopedWorkGroupId(veh.workGroupId) });
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updateVehicle = async (id: string, veh: Partial<Vehicle>) => {
-    try { await updateDoc(doc(db, 'vehicles', id), veh); } catch (e) { console.error(e); }
+    try {
+      const safeVeh = lockedWorkGroupId ? { ...veh, workGroupId: lockedWorkGroupId } : veh;
+      await updateDoc(doc(db, 'vehicles', id), safeVeh);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const deleteVehicle = async (id: string) => {
-    try { await deleteDoc(doc(db, 'vehicles', id)); } catch (e) { console.error(e); }
+    try {
+      await deleteDoc(doc(db, 'vehicles', id));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const addRoute = async (route: Omit<RouteDef, 'id'>) => {
     try {
       const docRef = doc(collection(db, 'routes'));
-      await setDoc(docRef, { ...route, workGroupId: route.workGroupId || state.activeWorkGroupId || '' });
-    } catch (e) { console.error(e); }
+      await setDoc(docRef, { ...route, workGroupId: resolveScopedWorkGroupId(route.workGroupId) });
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updateRoute = async (id: string, route: Partial<RouteDef>) => {
-    try { await updateDoc(doc(db, 'routes', id), route); } catch (e) { console.error(e); }
+    try {
+      const safeRoute = lockedWorkGroupId ? { ...route, workGroupId: lockedWorkGroupId } : route;
+      await updateDoc(doc(db, 'routes', id), safeRoute);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const deleteRoute = async (id: string) => {
-    try { await deleteDoc(doc(db, 'routes', id)); } catch (e) { console.error(e); }
+    try {
+      await deleteDoc(doc(db, 'routes', id));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const addCrew = async (crew: Omit<CrewTemplate, 'id'>) => {
     try {
       const docRef = doc(collection(db, 'crews'));
-      await setDoc(docRef, { ...crew, workGroupId: crew.workGroupId || state.activeWorkGroupId || '' });
-    } catch (e) { console.error(e); }
+      await setDoc(docRef, { ...crew, workGroupId: resolveScopedWorkGroupId(crew.workGroupId) });
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updateCrew = async (id: string, crew: Partial<CrewTemplate>) => {
-    try { await updateDoc(doc(db, 'crews', id), crew); } catch (e) { console.error(e); }
+    try {
+      const safeCrew = lockedWorkGroupId ? { ...crew, workGroupId: lockedWorkGroupId } : crew;
+      await updateDoc(doc(db, 'crews', id), safeCrew);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const deleteCrew = async (id: string) => {
-    try { await deleteDoc(doc(db, 'crews', id)); } catch (e) { console.error(e); }
+    try {
+      await deleteDoc(doc(db, 'crews', id));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const addAssignment = async (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => {
     try {
       const nowIso = new Date().toISOString();
       const createdAt = assignment.date || nowIso;
-      
+
       const meta = {
         createdAt,
-        statusHistory: [{ status: 'Pendiente', timestamp: createdAt }]
+        statusHistory: [{ status: 'Pendiente', timestamp: createdAt }],
       };
 
       const metaIncident: Incident = {
@@ -317,7 +515,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         type: 'Otro',
         description: JSON.stringify(meta),
         startTime: '',
-        endTime: ''
+        endTime: '',
       };
 
       const docRef = doc(collection(db, 'assignments'));
@@ -328,15 +526,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         date: assignment.date,
         status: 'Pendiente',
         incidents: [metaIncident],
-        workGroupId: assignment.workGroupId || state.activeWorkGroupId || '',
-        weightTons: assignment.weightTons || 0
+        workGroupId: resolveScopedWorkGroupId(assignment.workGroupId),
+        weightTons: assignment.weightTons || 0,
       });
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updateAssignmentStatus = async (id: string, status: Assignment['status'], weightTons?: number, customTimestamp?: string) => {
-    try { 
+    try {
       const assignment = state.assignments.find(a => a.id === id);
+      if (!assignment) return;
       const tsIso = customTimestamp ? new Date(customTimestamp).toISOString() : new Date().toISOString();
       const updateData: any = { status };
       if (weightTons !== undefined) {
@@ -365,17 +566,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         type: 'Otro',
         description: JSON.stringify(meta),
         startTime: '',
-        endTime: ''
+        endTime: '',
       };
 
       const baseIncidents = (assignment?.incidents || []).filter(i => i.id !== 'SYS_META');
       updateData.incidents = [...baseIncidents, metaIncident];
 
-      await updateDoc(doc(db, 'assignments', id), updateData); 
-    } catch (e) { console.error(e); }
+      await updateDoc(doc(db, 'assignments', id), updateData);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const updateAssignmentResources = async (id: string, updates: { vehicleId?: string; employeeIds?: string[]; statusTimestamps?: Record<string, string> }) => {
+  const updateAssignmentResources = async (
+    id: string,
+    updates: { vehicleId?: string; employeeIds?: string[]; statusTimestamps?: Record<string, string> }
+  ) => {
     try {
       const assignment = state.assignments.find(a => a.id === id);
       if (!assignment) return;
@@ -393,15 +599,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const newHistory = (assignment.statusHistory || []).map(h => ({
           ...h,
-          timestamp: updates.statusTimestamps![h.status] || h.timestamp
+          timestamp: updates.statusTimestamps![h.status] || h.timestamp,
         }));
         meta.statusHistory = newHistory;
 
-        if (updates.statusTimestamps['Salida de Base']) meta.salidaBaseAt = new Date(updates.statusTimestamps['Salida de Base']).toISOString();
-        if (updates.statusTimestamps['Inicio de Ruta']) meta.inicioRutaAt = new Date(updates.statusTimestamps['Inicio de Ruta']).toISOString();
-        if (updates.statusTimestamps['Fin de Ruta']) meta.finRutaAt = new Date(updates.statusTimestamps['Fin de Ruta']).toISOString();
-        if (updates.statusTimestamps['Base']) meta.llegadaBaseAt = new Date(updates.statusTimestamps['Base']).toISOString();
-        if (updates.statusTimestamps['Pendiente']) meta.createdAt = new Date(updates.statusTimestamps['Pendiente']).toISOString();
+        if (updates.statusTimestamps['Salida de Base'])
+          meta.salidaBaseAt = new Date(updates.statusTimestamps['Salida de Base']).toISOString();
+        if (updates.statusTimestamps['Inicio de Ruta'])
+          meta.inicioRutaAt = new Date(updates.statusTimestamps['Inicio de Ruta']).toISOString();
+        if (updates.statusTimestamps['Fin de Ruta'])
+          meta.finRutaAt = new Date(updates.statusTimestamps['Fin de Ruta']).toISOString();
+        if (updates.statusTimestamps['Base'])
+          meta.llegadaBaseAt = new Date(updates.statusTimestamps['Base']).toISOString();
+        if (updates.statusTimestamps['Pendiente'])
+          meta.createdAt = new Date(updates.statusTimestamps['Pendiente']).toISOString();
 
         const metaIncident: Incident = {
           id: 'SYS_META',
@@ -409,33 +620,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           type: 'Otro',
           description: JSON.stringify(meta),
           startTime: '',
-          endTime: ''
+          endTime: '',
         };
         const baseIncidents = (assignment.incidents || []).filter(i => i.id !== 'SYS_META');
         updateData.incidents = [...baseIncidents, metaIncident];
       }
       await updateDoc(doc(db, 'assignments', id), updateData);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const addIncident = async (assignmentId: string, incident: Omit<Incident, 'id' | 'timestamp'>) => {
     try {
       const assignment = state.assignments.find(a => a.id === assignmentId);
       if (!assignment) return;
-      
+
       const newIncident: Incident = {
         ...incident,
         id: generateId(),
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
-      
+
       const meta: any = {
         salidaBaseAt: assignment.salidaBaseAt,
         inicioRutaAt: assignment.inicioRutaAt,
         finRutaAt: assignment.finRutaAt,
         llegadaBaseAt: assignment.llegadaBaseAt,
         createdAt: assignment.createdAt,
-        statusHistory: assignment.statusHistory
+        statusHistory: assignment.statusHistory,
       };
 
       const metaIncident: Incident = {
@@ -444,52 +657,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         type: 'Otro',
         description: JSON.stringify(meta),
         startTime: '',
-        endTime: ''
+        endTime: '',
       };
 
       const updatedIncidents = [...(assignment.incidents || []), newIncident, metaIncident];
       await updateDoc(doc(db, 'assignments', assignmentId), { incidents: updatedIncidents });
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const saveAttendance = async (attendance: Omit<Attendance, 'id'>) => {
     try {
       const docId = `${attendance.employeeId}_${attendance.date}`;
-      await setDoc(doc(db, 'attendances', docId), attendance);
-    } catch (e) { console.error(e); }
+      await setDoc(doc(db, 'attendances', docId), {
+        ...attendance,
+        workGroupId: resolveScopedWorkGroupId(attendance.workGroupId),
+      });
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   return (
-    <AppContext.Provider value={{
-      state,
-      syncStatus,
-      syncNow,
-      setLatencyInterval,
-      addWorkGroup,
-      deleteWorkGroup,
-      setActiveWorkGroup,
-      addEmployee,
-      updateEmployee,
-      deleteEmployee,
-      deleteAllEmployees,
-      importEmployeesBulk,
-      addVehicle,
-      updateVehicle,
-      deleteVehicle,
-      addRoute,
-      updateRoute,
-      deleteRoute,
-      addCrew,
-      updateCrew,
-      deleteCrew,
-      addAssignment,
-      updateAssignmentStatus,
-      updateAssignmentResources,
-      addIncident,
-      saveAttendance,
-      setBackupEmail,
-      triggerManualBackup,
-    }}>
+    <AppContext.Provider
+      value={{
+        state,
+        syncStatus,
+        syncNow,
+        setLatencyInterval,
+        addWorkGroup,
+        deleteWorkGroup,
+        setActiveWorkGroup,
+        addEmployee,
+        updateEmployee,
+        deleteEmployee,
+        deleteAllEmployees,
+        importEmployeesBulk,
+        addVehicle,
+        updateVehicle,
+        deleteVehicle,
+        addRoute,
+        updateRoute,
+        deleteRoute,
+        addCrew,
+        updateCrew,
+        deleteCrew,
+        addAssignment,
+        updateAssignmentStatus,
+        updateAssignmentResources,
+        addIncident,
+        saveAttendance,
+        setBackupEmail,
+        triggerManualBackup,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

@@ -5,17 +5,18 @@
 
 import React, { useState, useEffect } from 'react';
 import { AppProvider } from './context/AppContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { Layout } from './components/Layout';
 import { AdminPage } from './pages/AdminPage';
 import { AssignmentPage } from './pages/AssignmentPage';
 import { TrackingPage } from './pages/TrackingPage';
 import { ReportsPage } from './pages/ReportsPage';
-import { authenticateAppUser } from './lib/firebase';
+import { UsersAdminPage } from './pages/UsersAdminPage';
+import { DriverPage } from './pages/DriverPage';
 
-export default function App() {
+function AppContent() {
+  const { user, loading, login, logout, isAdmin, isConductor } = useAuth();
   const [currentView, setCurrentView] = useState('tracking');
-  const [user, setUser] = useState<{ username: string } | null>(null);
-  const [loading, setLoading] = useState(true);
 
   // Login State
   const [username, setUsername] = useState('');
@@ -23,32 +24,38 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // Enforce role-based default & permitted view
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('PROMO_USER_SESSION');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.username) {
-          setUser(parsed);
-        }
-      }
-    } catch (e) {
-      console.error('Error loading session', e);
+    if (!user) return;
+    if (user.role === 'conductor') {
+      setCurrentView('driver');
+    } else if (currentView === 'users' && user.role !== 'admin') {
+      setCurrentView('tracking');
+    } else if (currentView === 'driver' && user.role !== 'conductor') {
+      // keep driver view allowed for admin/gestion/supervisor if explicitly selected
     }
-    setLoading(false);
-  }, []);
+  }, [user, currentView]);
+
+  const handleViewChange = (nextView: string) => {
+    if (!user) return;
+    if (user.role === 'conductor') {
+      setCurrentView('driver');
+      return;
+    }
+    if (nextView === 'users' && user.role !== 'admin') {
+      return;
+    }
+    setCurrentView(nextView);
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     setIsLoggingIn(true);
-    
+
     try {
-      const result = await authenticateAppUser(username, password);
+      const result = await login(username, password);
       if (result.success) {
-        const sessionData = { username: result.username, loggedAt: Date.now() };
-        localStorage.setItem('PROMO_USER_SESSION', JSON.stringify(sessionData));
-        setUser(sessionData);
         setUsername('');
         setPassword('');
       } else {
@@ -62,9 +69,9 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('PROMO_USER_SESSION');
-    setUser(null);
+  const handleLogout = async () => {
+    await logout();
+    setCurrentView('tracking');
   };
 
   if (loading) {
@@ -86,7 +93,7 @@ export default function App() {
           </div>
           <h1 className="text-2xl font-bold mb-2">Promoambiental</h1>
           <p className="text-sm text-slate-400 mb-6">Sistema Central de Despacho. Inicie sesión para continuar.</p>
-          
+
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <input
@@ -122,15 +129,32 @@ export default function App() {
     );
   }
 
+  const effectiveView = isConductor ? 'driver' : currentView;
+
   return (
     <AppProvider>
-      <Layout currentView={currentView} onViewChange={setCurrentView} onLogout={handleLogout}>
-        {currentView === 'admin' && <AdminPage />}
-        {currentView === 'assign' && <AssignmentPage />}
-        {currentView === 'tracking' && <TrackingPage />}
-        {currentView === 'reports' && <ReportsPage />}
+      <Layout currentView={effectiveView} onViewChange={handleViewChange} onLogout={handleLogout}>
+        {isConductor ? (
+          <DriverPage />
+        ) : (
+          <>
+            {effectiveView === 'admin' && <AdminPage />}
+            {effectiveView === 'assign' && <AssignmentPage />}
+            {effectiveView === 'tracking' && <TrackingPage />}
+            {effectiveView === 'reports' && <ReportsPage />}
+            {effectiveView === 'driver' && <DriverPage />}
+            {effectiveView === 'users' && isAdmin && <UsersAdminPage />}
+          </>
+        )}
       </Layout>
     </AppProvider>
   );
 }
 
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+}

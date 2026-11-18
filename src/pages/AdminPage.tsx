@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAppContext } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import { Users, Truck, MapPin, Plus, Trash2, X, Settings, Download, UploadCloud, Shield, Phone, MessageCircle, User, UserCog, Filter, HardHat, Edit2 } from 'lucide-react';
 import { Employee, EmployeeRole, Vehicle, RouteDef } from '../types';
 import { downloadCsvTemplate, parseCsvFile } from '../utils/csvHelper';
@@ -43,9 +44,16 @@ const ConfirmModal = ({ isOpen, onClose, onConfirm, title, message }: { isOpen: 
 };
 
 export const AdminPage: React.FC = () => {
+  const { canManageAllGroups } = useAuth();
   const [activeTab, setActiveTab] = useState<'employees' | 'vehicles' | 'routes' | 'general'>('employees');
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
-  
+
+  useEffect(() => {
+    if (!canManageAllGroups && activeTab === 'general') {
+      setActiveTab('employees');
+    }
+  }, [canManageAllGroups, activeTab]);
+
   return (
     <div className="flex flex-col space-y-6">
       {/* Tabs */}
@@ -78,18 +86,20 @@ export const AdminPage: React.FC = () => {
             <MapPin className="h-4 w-4" />
             <span>Rutas Base</span>
           </button>
-          <button
-            onClick={() => setActiveTab('general')}
-            className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'general' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            <Shield className="h-4 w-4" />
-            <span>General</span>
-          </button>
+          {canManageAllGroups && (
+            <button
+              onClick={() => setActiveTab('general')}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                activeTab === 'general' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <Shield className="h-4 w-4" />
+              <span>General</span>
+            </button>
+          )}
         </div>
-        
-        <button 
+
+        <button
           onClick={() => setIsBulkModalOpen(true)}
           className="p-2 ml-2 text-slate-500 hover:text-emerald-500 hover:bg-slate-200 bg-white rounded-lg transition-colors border border-slate-200 shadow-sm"
           title="Importar/Exportar Datos"
@@ -99,7 +109,7 @@ export const AdminPage: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        {activeTab === 'general' && <GeneralTab />}
+        {activeTab === 'general' && canManageAllGroups && <GeneralTab />}
         {activeTab === 'employees' && <EmployeesTab />}
         {activeTab === 'vehicles' && <VehiclesTab />}
         {activeTab === 'routes' && <RoutesTab />}
@@ -299,10 +309,11 @@ const BulkActionModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => 
 
 const EmployeesTab = () => {
   const { state, addEmployee, updateEmployee, deleteEmployee, deleteAllEmployees } = useAppContext();
+  const { canManageAllGroups, lockedWorkGroupId } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [roleFilter, setRoleFilter] = useState<string>('Todos');
-  const [groupFilter, setGroupFilter] = useState<string>(state.activeWorkGroupId || 'Todos');
-  useEffect(() => { setGroupFilter(state.activeWorkGroupId || 'Todos'); }, [state.activeWorkGroupId]);
+  const [groupFilter, setGroupFilter] = useState<string>(lockedWorkGroupId || state.activeWorkGroupId || 'Todos');
+  useEffect(() => { setGroupFilter(lockedWorkGroupId || state.activeWorkGroupId || 'Todos'); }, [state.activeWorkGroupId, lockedWorkGroupId]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<Employee, 'id'> & { firstName?: string, lastName?: string }>({ name: '', firstName: '', lastName: '', role: 'Conductor', phone: '', workGroup: '', workGroupId: state.activeWorkGroupId || '' });
   useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: state.activeWorkGroupId || ''})); }, [state.activeWorkGroupId, editingId]);
@@ -397,8 +408,8 @@ const EmployeesTab = () => {
             ))}
           </div>
 
-          {state.employees.length > 0 && (
-            <button 
+          {canManageAllGroups && state.employees.length > 0 && (
+            <button
               onClick={() => setIsDeleteAllModalOpen(true)}
               className="bg-red-50 text-red-600 border border-red-200 shrink-0 rounded-lg p-2 md:px-3 md:py-2 text-xs md:text-sm font-medium hover:bg-red-100 flex items-center transition-colors"
               title="Eliminar todos los registros de personal"
@@ -518,7 +529,13 @@ const EmployeesTab = () => {
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Grupo de Trabajo</label>
-            <select required value={form.workGroupId || ''} onChange={e => setForm({...form, workGroupId: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+            <select
+              required
+              disabled={Boolean(lockedWorkGroupId)}
+              value={lockedWorkGroupId || form.workGroupId || ''}
+              onChange={e => setForm({...form, workGroupId: e.target.value})}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
+            >
               <option value="">Seleccione grupo...</option>
               {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
             </select>
@@ -559,11 +576,12 @@ const EmployeesTab = () => {
 
 const VehiclesTab = () => {
   const { state, addVehicle, updateVehicle, deleteVehicle } = useAppContext();
+  const { lockedWorkGroupId } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState<Omit<Vehicle, 'id'>>({ plate: '', internalNumber: '', capacity: 0, status: 'Operativo', workGroupId: state.activeWorkGroupId || '' });
-  useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: state.activeWorkGroupId || f.workGroupId || ''})); }, [state.activeWorkGroupId, editingId]);
+  const [form, setForm] = useState<Omit<Vehicle, 'id'>>({ plate: '', internalNumber: '', capacity: 0, status: 'Operativo', workGroupId: lockedWorkGroupId || state.activeWorkGroupId || '' });
+  useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: lockedWorkGroupId || state.activeWorkGroupId || f.workGroupId || ''})); }, [state.activeWorkGroupId, lockedWorkGroupId, editingId]);
 
   const activeGroupVehicles = state.vehicles.filter(v => !state.activeWorkGroupId || v.workGroupId === state.activeWorkGroupId);
 
@@ -678,7 +696,13 @@ const VehiclesTab = () => {
 
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Grupo de Trabajo</label>
-            <select required value={form.workGroupId || ''} onChange={e => setForm({...form, workGroupId: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+            <select
+              required
+              disabled={Boolean(lockedWorkGroupId)}
+              value={lockedWorkGroupId || form.workGroupId || ''}
+              onChange={e => setForm({...form, workGroupId: e.target.value})}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
+            >
               <option value="">Seleccione grupo...</option>
               {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
             </select>
@@ -704,11 +728,12 @@ const VehiclesTab = () => {
 
 const RoutesTab = () => {
   const { state, addRoute, updateRoute, deleteRoute } = useAppContext();
+  const { lockedWorkGroupId } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState<Omit<RouteDef, 'id'>>({ name: '', code: '', operatingDays: [], origin: '', destination: '', estimatedHours: 0, workGroupId: state.activeWorkGroupId || '' });
-  useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: state.activeWorkGroupId || f.workGroupId || ''})); }, [state.activeWorkGroupId, editingId]);
+  const [form, setForm] = useState<Omit<RouteDef, 'id'>>({ name: '', code: '', operatingDays: [], origin: '', destination: '', estimatedHours: 0, workGroupId: lockedWorkGroupId || state.activeWorkGroupId || '' });
+  useEffect(() => { if (!editingId) setForm(f => ({...f, workGroupId: lockedWorkGroupId || state.activeWorkGroupId || f.workGroupId || ''})); }, [state.activeWorkGroupId, lockedWorkGroupId, editingId]);
 
   const activeGroupRoutes = state.routes.filter(r => !state.activeWorkGroupId || r.workGroupId === state.activeWorkGroupId);
 
@@ -887,7 +912,13 @@ const RoutesTab = () => {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1">Grupo de Trabajo</label>
-              <select required value={form.workGroupId || ''} onChange={e => setForm({...form, workGroupId: e.target.value})} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+              <select
+                required
+                disabled={Boolean(lockedWorkGroupId)}
+                value={lockedWorkGroupId || form.workGroupId || ''}
+                onChange={e => setForm({...form, workGroupId: e.target.value})}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
+              >
                 <option value="">Seleccione grupo...</option>
                 {state.workGroups.map(wg => <option key={wg.id} value={wg.id}>{wg.name}</option>)}
               </select>

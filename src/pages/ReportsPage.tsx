@@ -1,19 +1,21 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useAppContext } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import { exportToCsv } from '../utils/exportCsv';
 import { 
   BarChart2, Download, Users, Truck, CheckCircle, 
   AlertTriangle, XCircle, PieChart as PieChartIcon, 
-  X, Clock, MapPin, Layers, Info
+  X, Clock, MapPin, Layers, Info, Smartphone
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import { Assignment, Incident, RouteDef, Vehicle, Employee } from '../types';
 import { AttendanceIncidentsReportView } from '../components/reports/AttendanceIncidentsReportView';
 import { FleetAssetsReportView } from '../components/reports/FleetAssetsReportView';
 import { CustomExportReportView } from '../components/reports/CustomExportReportView';
+import { DriverShiftsReportView } from '../components/reports/DriverShiftsReportView';
 import { ReportSubMenuHeader } from '../components/reports/ReportSubMenuHeader';
 
-type ReportSubTab = 'attendance' | 'fleet' | 'export_wizard' | 'general';
+type ReportSubTab = 'attendance' | 'fleet' | 'export_wizard' | 'general' | 'driver_shifts';
 type DetailModalType = 
   | 'rutas_asignadas' 
   | 'rutas_todas' 
@@ -29,6 +31,7 @@ type DetailModalType =
 export const ReportsPage: React.FC = () => {
   // Active WorkGroup and Sub-Tabs
   const { state, setActiveWorkGroup } = useAppContext();
+  const { lockedWorkGroupId } = useAuth();
   const [activeTab, setActiveTab] = useState<ReportSubTab>('attendance');
   const [activeDetail, setActiveDetail] = useState<DetailModalType>(null);
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
@@ -421,6 +424,12 @@ export const ReportsPage: React.FC = () => {
       icon: <BarChart2 className="h-4 w-4" />
     },
     {
+      id: 'driver_shifts',
+      label: 'Control Conductores',
+      icon: <Smartphone className="h-4 w-4" />,
+      badge: `${state.driverShifts.length} turnos`
+    },
+    {
       id: 'export_wizard',
       label: 'Reporte Customizado (+)',
       icon: <Layers className="h-4 w-4" />
@@ -461,6 +470,7 @@ export const ReportsPage: React.FC = () => {
       <div className="bg-white p-4 sm:p-6 rounded-b-2xl border-x border-b border-slate-300 shadow-sm min-h-[600px]">
         {activeTab === 'attendance' && <AttendanceIncidentsReportView />}
         {activeTab === 'fleet' && <FleetAssetsReportView />}
+        {activeTab === 'driver_shifts' && <DriverShiftsReportView />}
         {activeTab === 'export_wizard' && <CustomExportReportView />}
 
         {activeTab === 'general' && (
@@ -468,8 +478,8 @@ export const ReportsPage: React.FC = () => {
             <ReportSubMenuHeader 
               workGroups={state.workGroups}
               selectedGroupIds={state.activeWorkGroupId ? [state.activeWorkGroupId] : []}
-              onToggleGroup={(id) => setActiveWorkGroup(state.activeWorkGroupId === id ? null : id)}
-              onSelectAllGroups={() => setActiveWorkGroup(null)}
+              onToggleGroup={(id) => !lockedWorkGroupId && setActiveWorkGroup(state.activeWorkGroupId === id ? null : id)}
+              onSelectAllGroups={() => !lockedWorkGroupId && setActiveWorkGroup(null)}
               routes={activeGroupRoutes}
               selectedRouteIds={selectedRouteIds}
               onToggleRoute={toggleRouteSelection}

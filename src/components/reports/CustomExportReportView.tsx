@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useAppContext } from '../../context/AppContext';
+import { useAuth } from '../../context/AuthContext';
 import { exportToCsv } from '../../utils/exportCsv';
 import { 
   FileSpreadsheet, Download, Filter, Calendar, Users, 
@@ -10,13 +11,14 @@ import { ReportSubMenuHeader } from './ReportSubMenuHeader';
 
 export const CustomExportReportView: React.FC = () => {
   const { state } = useAppContext();
+  const { lockedWorkGroupId } = useAuth();
 
   const [reportType, setReportType] = useState<'attendance' | 'incidents' | 'fleet' | 'master'>('attendance');
   const [dateRange, setDateRange] = useState<'all' | 'today' | 'last7' | 'last30' | 'custom'>('last7');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedRoles, setSelectedRoles] = useState<string[]>(['Conductor', 'Ayudante', 'Coordinador']);
-  const [selectedGroups, setSelectedGroups] = useState<string[]>([]); // empty = all
+  const [selectedGroups, setSelectedGroups] = useState<string[]>(lockedWorkGroupId ? [lockedWorkGroupId] : []); // empty = all
   const [downloadSuccess, setDownloadSuccess] = useState(false);
 
   // Toggle role
@@ -28,6 +30,7 @@ export const CustomExportReportView: React.FC = () => {
 
   // Toggle group
   const toggleGroup = (groupId: string) => {
+    if (lockedWorkGroupId) return;
     setSelectedGroups(prev => 
       prev.includes(groupId) ? prev.filter(g => g !== groupId) : [...prev, groupId]
     );
@@ -233,7 +236,7 @@ export const CustomExportReportView: React.FC = () => {
         workGroups={state.workGroups}
         selectedGroupIds={selectedGroups}
         onToggleGroup={toggleGroup}
-        onSelectAllGroups={() => setSelectedGroups([])}
+        onSelectAllGroups={() => !lockedWorkGroupId && setSelectedGroups([])}
         onExportCsv={handleDownload}
       />
 

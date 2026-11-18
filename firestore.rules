@@ -1,16 +1,12 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} { 
-      allow read, write: if false; 
+    match /{document=**} {
+      allow read, write: if false;
     }
 
-    function isSignedIn() { 
-      return request.auth != null; 
-    }
-    
-    function isValidId(id) { 
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function incoming() { return request.resource.data; }
@@ -55,16 +51,6 @@ service cloud.firestore {
              data.get('lastName', '') is string && data.get('lastName', '').size() <= 50;
     }
 
-    function isValidIncident(data) {
-      return data.keys().hasOnly(['id', 'timestamp', 'type', 'description', 'startTime', 'endTime']) &&
-             data.id is string && data.id.size() <= 128 &&
-             data.timestamp is string && data.timestamp.size() <= 50 &&
-             data.type in ['Retraso', 'Mecánico', 'Personal', 'Clima', 'Otro'] &&
-             data.description is string && data.description.size() <= 500 &&
-             data.get('startTime', '') is string && data.get('startTime', '').size() <= 50 &&
-             data.get('endTime', '') is string && data.get('endTime', '').size() <= 50;
-    }
-
     function isValidAssignment(data) {
       return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
              data.routeId is string && data.routeId.size() <= 128 &&
@@ -88,10 +74,17 @@ service cloud.firestore {
     }
 
     function isValidAppUser(data) {
-      return data.keys().hasOnly(['username', 'password', 'createdAt']) &&
-             data.username is string && data.username.size() <= 100 &&
-             data.password is string && data.password.size() <= 100 &&
-             data.get('createdAt', '') is string && data.get('createdAt', '').size() <= 100;
+      return data.keys().hasAll(['username', 'password']) &&
+             data.keys().hasOnly(['username', 'password', 'fullName', 'role', 'workGroupId', 'employeeId', 'active', 'createdAt', 'updatedAt']) &&
+             data.username is string && data.username.size() >= 1 && data.username.size() <= 100 &&
+             data.password is string && data.password.size() >= 1 && data.password.size() <= 256 &&
+             data.get('fullName', '') is string && data.get('fullName', '').size() <= 120 &&
+             data.get('role', 'gestion') in ['admin', 'gestion', 'supervisor', 'conductor'] &&
+             data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
+             data.get('employeeId', '') is string && data.get('employeeId', '').size() <= 128 &&
+             data.get('active', true) is bool &&
+             data.get('createdAt', '') is string && data.get('createdAt', '').size() <= 100 &&
+             data.get('updatedAt', '') is string && data.get('updatedAt', '').size() <= 100;
     }
 
     function isValidAttendance(data) {
@@ -100,6 +93,40 @@ service cloud.firestore {
              data.date is string && data.date.size() <= 20 &&
              data.status in ['OK', 'RTM', 'AUS', 'PNR', 'MED', 'PRL', 'ACC', 'INC', 'PXC', 'FAM', 'NDL', 'SAN', 'VAC', 'LCL', 'RETIRO', 'TRASLADO', 'VACANTES'] &&
              data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128;
+    }
+
+    function isValidDriverShift(data) {
+      return data.keys().hasAll(['date', 'workGroupId', 'driverId', 'driverName', 'vehicleNumber', 'createdByUserId', 'status', 't1StartShiftAt', 'isPausedForRefill', 'refillEvents', 'isInBreakdown', 'breakdownEvents', 'refillTotalMins', 'mechanicalBreakdownTotalMins', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly([
+               'date', 'workGroupId', 'workGroupName', 'driverId', 'driverName', 'vehicleNumber', 'vehicleId',
+               'createdByUserId', 'createdByUsername', 'status', 'checklistConfirmed', 'checklistConfirmedAt',
+               't1StartShiftAt', 't2StartRouteAt', 't3EndRouteAt', 't4ArriveBaseAt',
+               'isPausedForRefill', 'activeRefillId', 'pausedPhase', 'refillEvents',
+               'isInBreakdown', 'activeBreakdownId', 'breakdownEvents',
+               'initialTransitMins', 'routeExecutionMins', 'routeExecutionNetMins',
+               'returnTransitMins', 'totalOperationMins', 'totalOperationNetMins',
+               'refillTotalMins', 'mechanicalBreakdownTotalMins', 'createdAt', 'updatedAt'
+             ]) &&
+             data.date is string && data.date.size() <= 20 &&
+             data.workGroupId is string && data.workGroupId.size() >= 1 && data.workGroupId.size() <= 128 &&
+             data.get('workGroupName', '') is string && data.get('workGroupName', '').size() <= 100 &&
+             data.driverId is string && data.driverId.size() >= 1 && data.driverId.size() <= 128 &&
+             data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 120 &&
+             data.vehicleNumber is string && data.vehicleNumber.size() >= 1 && data.vehicleNumber.size() <= 50 &&
+             data.get('vehicleId', '') is string && data.get('vehicleId', '').size() <= 128 &&
+             data.createdByUserId is string && data.createdByUserId.size() >= 1 && data.createdByUserId.size() <= 128 &&
+             data.get('createdByUsername', '') is string && data.get('createdByUsername', '').size() <= 100 &&
+             data.status in ['EN_TURNO', 'EN_RUTA', 'FIN_RUTA', 'EN_BASE'] &&
+             data.get('checklistConfirmed', false) is bool &&
+             data.t1StartShiftAt is string && data.t1StartShiftAt.size() <= 50 &&
+             data.isPausedForRefill is bool &&
+             data.refillEvents is list && data.refillEvents.size() <= 50 &&
+             data.isInBreakdown is bool &&
+             data.breakdownEvents is list && data.breakdownEvents.size() <= 50 &&
+             data.refillTotalMins is number && data.refillTotalMins >= 0 &&
+             data.mechanicalBreakdownTotalMins is number && data.mechanicalBreakdownTotalMins >= 0 &&
+             data.createdAt is string && data.createdAt.size() <= 50 &&
+             data.updatedAt is string && data.updatedAt.size() <= 50;
     }
 
     match /workGroups/{id} {
@@ -141,13 +168,27 @@ service cloud.firestore {
     match /app_users/{id} {
       allow read: if true;
       allow create: if isValidId(id) && isValidAppUser(incoming());
-      allow update: if isValidId(id) && isValidAppUser(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['username', 'password', 'createdAt']);
+      allow update: if isValidId(id) && isValidAppUser(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['username', 'password', 'fullName', 'role', 'workGroupId', 'employeeId', 'active', 'createdAt', 'updatedAt']);
       allow delete: if isValidId(id);
     }
     match /attendances/{id} {
       allow read: if true;
       allow create: if isValidId(id) && isValidAttendance(incoming());
       allow update: if isValidId(id) && isValidAttendance(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['employeeId', 'date', 'status', 'workGroupId']);
+      allow delete: if isValidId(id);
+    }
+    match /driver_shifts/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidDriverShift(incoming());
+      allow update: if isValidId(id) && isValidDriverShift(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly([
+        'status', 'checklistConfirmed', 'checklistConfirmedAt',
+        't2StartRouteAt', 't3EndRouteAt', 't4ArriveBaseAt',
+        'isPausedForRefill', 'activeRefillId', 'pausedPhase', 'refillEvents',
+        'isInBreakdown', 'activeBreakdownId', 'breakdownEvents',
+        'initialTransitMins', 'routeExecutionMins', 'routeExecutionNetMins',
+        'returnTransitMins', 'totalOperationMins', 'totalOperationNetMins',
+        'refillTotalMins', 'mechanicalBreakdownTotalMins', 'updatedAt'
+      ]);
       allow delete: if isValidId(id);
     }
   }

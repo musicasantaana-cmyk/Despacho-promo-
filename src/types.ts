@@ -3,6 +3,8 @@ export type VehicleStatus = 'Operativo' | 'Inoperativo';
 export type AssignmentStatus = 'Pendiente' | 'Salida de Base' | 'Inicio de Ruta' | 'Fin de Ruta' | 'Relleno' | 'Base' | 'Cancelado';
 export type IncidentType = 'Retraso' | 'Mecánico' | 'Personal' | 'Clima' | 'Otro';
 
+export type UserRole = 'admin' | 'gestion' | 'supervisor' | 'conductor';
+
 export interface WorkGroup {
   id: string;
   name: string;
@@ -115,6 +117,70 @@ export interface Attendance {
   workGroupId?: string;
 }
 
+export type DriverShiftStatus = 'EN_TURNO' | 'EN_RUTA' | 'FIN_RUTA' | 'EN_BASE';
+
+export interface RefillEvent {
+  id: string;
+  startAt: string;
+  endAt: string | null;
+  durationMins: number | null;
+  durationSeconds: number | null;
+  phaseAtPause: DriverShiftStatus;
+}
+
+export interface BreakdownEvent {
+  id: string;
+  startAt: string;
+  endAt: string | null;
+  durationMins: number | null;
+  durationSeconds: number | null;
+  phaseAtIncident: DriverShiftStatus;
+  notes?: string;
+}
+
+export interface DriverShift {
+  id: string;
+  date: string; // YYYY-MM-DD
+  workGroupId: string;
+  workGroupName?: string;
+  driverId: string;
+  driverName: string;
+  vehicleNumber: string;
+  vehicleId?: string;
+  createdByUserId: string;
+  createdByUsername: string;
+  status: DriverShiftStatus;
+
+  checklistConfirmed: boolean;
+  checklistConfirmedAt?: string | null;
+
+  t1StartShiftAt: string;
+  t2StartRouteAt?: string | null;
+  t3EndRouteAt?: string | null;
+  t4ArriveBaseAt?: string | null;
+
+  isPausedForRefill: boolean;
+  activeRefillId?: string | null;
+  pausedPhase?: DriverShiftStatus | null;
+  refillEvents: RefillEvent[];
+
+  isInBreakdown: boolean;
+  activeBreakdownId?: string | null;
+  breakdownEvents: BreakdownEvent[];
+
+  initialTransitMins?: number | null;
+  routeExecutionMins?: number | null;
+  routeExecutionNetMins?: number | null;
+  returnTransitMins?: number | null;
+  totalOperationMins?: number | null;
+  totalOperationNetMins?: number | null;
+  refillTotalMins: number;
+  mechanicalBreakdownTotalMins: number;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppState {
   workGroups: WorkGroup[];
   activeWorkGroupId: string | null;
@@ -124,6 +190,7 @@ export interface AppState {
   assignments: Assignment[];
   crews: CrewTemplate[];
   attendances: Attendance[];
+  driverShifts: DriverShift[];
   backupEmail: string | null;
   lastBackupDate: string | null;
 }
@@ -142,6 +209,20 @@ export interface AppUser {
   id: string;
   username: string;
   password?: string;
+  fullName?: string;
+  role: UserRole;
+  workGroupId?: string;
+  employeeId?: string;
+  active?: boolean;
   createdAt?: string;
+  updatedAt?: string;
 }
 
+export interface AuthSessionUser {
+  id: string;
+  username: string;
+  fullName?: string;
+  role: UserRole;
+  workGroupId?: string;
+  employeeId?: string;
+}

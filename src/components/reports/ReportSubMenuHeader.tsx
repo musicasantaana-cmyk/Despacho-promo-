@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layers, MoreVertical, Download, MapPin } from 'lucide-react';
+import { Layers, MoreVertical, Download, MapPin, Lock } from 'lucide-react';
 import { WorkGroup, RouteDef } from '../../types';
+import { useAuth } from '../../context/AuthContext';
 
 interface Props {
   workGroups: WorkGroup[];
@@ -20,6 +21,7 @@ export const ReportSubMenuHeader: React.FC<Props> = ({
   routes, selectedRouteIds = [], onToggleRoute, onSelectAllRoutes,
   onExportCsv, children
 }) => {
+  const { lockedWorkGroupId } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -42,27 +44,34 @@ export const ReportSubMenuHeader: React.FC<Props> = ({
             <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center">
               <Layers className="h-4 w-4 mr-1.5 text-slate-400" /> Filtro de Grupos
             </span>
-            <button
-              onClick={onSelectAllGroups}
-              className={`text-xs font-bold transition-colors ${
-                selectedGroupIds.length === 0 ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              {selectedGroupIds.length === 0 ? '✓ Todos los grupos' : 'Seleccionar todos'}
-            </button>
+            {lockedWorkGroupId ? (
+              <span className="text-xs font-bold text-amber-700 flex items-center gap-1">
+                <Lock className="h-3 w-3" /> Grupo Asignado
+              </span>
+            ) : (
+              <button
+                onClick={onSelectAllGroups}
+                className={`text-xs font-bold transition-colors ${
+                  selectedGroupIds.length === 0 ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600'
+                }`}
+              >
+                {selectedGroupIds.length === 0 ? '✓ Todos los grupos' : 'Seleccionar todos'}
+              </button>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             {workGroups.map(wg => {
-              const isSelected = selectedGroupIds.includes(wg.id);
+              const isSelected = lockedWorkGroupId ? wg.id === lockedWorkGroupId : selectedGroupIds.includes(wg.id);
               return (
                 <button
                   key={wg.id}
-                  onClick={() => onToggleGroup(wg.id)}
+                  disabled={Boolean(lockedWorkGroupId)}
+                  onClick={() => !lockedWorkGroupId && onToggleGroup(wg.id)}
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                     isSelected
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm'
                       : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                  }`}
+                  } disabled:cursor-default`}
                 >
                   {wg.name}
                 </button>
