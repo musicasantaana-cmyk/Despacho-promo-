@@ -136,6 +136,29 @@ export interface BreakdownEvent {
   durationSeconds: number | null;
   phaseAtIncident: DriverShiftStatus;
   notes?: string;
+  reportedByName?: string | null;
+  acknowledgedAt?: string | null;
+  acknowledgedByUserId?: string | null;
+  acknowledgedByUsername?: string | null;
+  acknowledgedByFullName?: string | null;
+  acknowledgedByRole?: UserRole | null;
+  acknowledgementNotes?: string | null;
+  resolvedByUserId?: string | null;
+  resolvedByUsername?: string | null;
+  resolvedReportedBy?: string | null;
+  resolutionNotes?: string | null;
+}
+
+export interface SupportPauseEvent {
+  id: string;
+  supportShiftId: string;
+  routeId?: string;
+  routeCode?: string;
+  routeName?: string;
+  startAt: string;
+  endAt: string | null;
+  durationMins: number | null;
+  durationSeconds: number | null;
 }
 
 export interface DriverShift {
@@ -147,6 +170,9 @@ export interface DriverShift {
   driverName: string;
   vehicleNumber: string;
   vehicleId?: string;
+  routeId?: string;
+  routeCode?: string;
+  routeName?: string;
   createdByUserId: string;
   createdByUsername: string;
   status: DriverShiftStatus;
@@ -168,15 +194,61 @@ export interface DriverShift {
   activeBreakdownId?: string | null;
   breakdownEvents: BreakdownEvent[];
 
+  isSupportShift?: boolean;
+  parentShiftId?: string | null;
+  parentRouteCode?: string;
+  parentRouteName?: string;
+  isPausedForSupport?: boolean;
+  activeSupportShiftId?: string | null;
+  supportEvents?: SupportPauseEvent[];
+  supportTotalMins?: number;
+
   initialTransitMins?: number | null;
   routeExecutionMins?: number | null;
   routeExecutionNetMins?: number | null;
   returnTransitMins?: number | null;
+  totalTransitMins?: number | null;
   totalOperationMins?: number | null;
   totalOperationNetMins?: number | null;
   refillTotalMins: number;
   mechanicalBreakdownTotalMins: number;
+  weightTons?: number | null;
 
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BreakdownAuditLog {
+  id: string;
+  shiftId: string;
+  breakdownId: string;
+  date: string;
+  workGroupId: string;
+  workGroupName?: string;
+  vehicleNumber: string;
+  routeCode?: string;
+  routeName?: string;
+  driverId?: string;
+  driverName: string;
+  incidentType: string;
+  notes?: string;
+  reportedAt: string;
+  reportedByUserId?: string;
+  reportedByUsername?: string;
+  reportedByName?: string;
+  status: 'PENDIENTE' | 'ACEPTADA';
+  acknowledgedAt?: string | null;
+  acknowledgedByUserId?: string | null;
+  acknowledgedByUsername?: string | null;
+  acknowledgedByFullName?: string | null;
+  acknowledgedByRole?: string | null;
+  acknowledgementNotes?: string | null;
+  resolvedAt?: string | null;
+  resolvedByUserId?: string | null;
+  resolvedByUsername?: string | null;
+  resolvedReportedBy?: string | null;
+  resolutionNotes?: string | null;
+  durationMins?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -191,6 +263,7 @@ export interface AppState {
   crews: CrewTemplate[];
   attendances: Attendance[];
   driverShifts: DriverShift[];
+  breakdownAuditLogs: BreakdownAuditLog[];
   backupEmail: string | null;
   lastBackupDate: string | null;
 }

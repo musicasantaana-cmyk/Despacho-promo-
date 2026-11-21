@@ -12,6 +12,7 @@ import {
   SyncStatus,
   Attendance,
   DriverShift,
+  BreakdownAuditLog,
 } from '../types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot, writeBatch } from 'firebase/firestore';
@@ -58,6 +59,7 @@ const defaultState: AppState = {
   crews: [],
   attendances: [],
   driverShifts: [],
+  breakdownAuditLogs: [],
   backupEmail: null,
   lastBackupDate: null,
 };
@@ -212,6 +214,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     );
 
+    const unsubBreakdownAuditLogs = onSnapshot(
+      collection(db, 'breakdown_audit_logs'),
+      snap => {
+        const docs = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as BreakdownAuditLog))
+          .sort((a, b) => (b.reportedAt || '').localeCompare(a.reportedAt || ''));
+        setRawState(prev => ({ ...prev, breakdownAuditLogs: docs }));
+        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
+      },
+      err => {
+        console.error('Firestore error breakdown_audit_logs', err);
+      }
+    );
+
     return () => {
       unsubWorkGroups();
       unsubEmployees();
@@ -221,6 +237,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubCrews();
       unsubAttendances();
       unsubDriverShifts();
+      unsubBreakdownAuditLogs();
     };
   }, [user, lockedWorkGroupId]);
 
@@ -253,6 +270,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         crews: rawState.crews.filter(c => c.workGroupId === lockedWorkGroupId),
         attendances: rawState.attendances.filter(att => att.workGroupId === lockedWorkGroupId),
         driverShifts: filteredShifts,
+        breakdownAuditLogs: isConductor
+          ? []
+          : rawState.breakdownAuditLogs.filter(l => l.workGroupId === lockedWorkGroupId),
       };
     }
 
@@ -262,6 +282,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         driverShifts: rawState.driverShifts.filter(
           s => s.createdByUserId === user.id || (user.employeeId && s.driverId === user.employeeId)
         ),
+        breakdownAuditLogs: [],
       };
     }
 

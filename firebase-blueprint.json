@@ -108,6 +108,9 @@
         "driverName": { "type": "string", "maxLength": 120 },
         "vehicleNumber": { "type": "string", "maxLength": 50 },
         "vehicleId": { "type": "string", "maxLength": 128 },
+        "routeId": { "type": "string", "maxLength": 128 },
+        "routeCode": { "type": "string", "maxLength": 50 },
+        "routeName": { "type": "string", "maxLength": 100 },
         "createdByUserId": { "type": "string", "maxLength": 128 },
         "createdByUsername": { "type": "string", "maxLength": 100 },
         "status": { "type": "string", "enum": ["EN_TURNO", "EN_RUTA", "FIN_RUTA", "EN_BASE"] },
@@ -124,18 +127,67 @@
         "isInBreakdown": { "type": "boolean" },
         "activeBreakdownId": { "type": "string", "maxLength": 128 },
         "breakdownEvents": { "type": "array" },
+        "isSupportShift": { "type": "boolean" },
+        "parentShiftId": { "type": "string", "maxLength": 128 },
+        "parentRouteCode": { "type": "string", "maxLength": 50 },
+        "parentRouteName": { "type": "string", "maxLength": 100 },
+        "isPausedForSupport": { "type": "boolean" },
+        "activeSupportShiftId": { "type": "string", "maxLength": 128 },
+        "supportEvents": { "type": "array" },
+        "supportTotalMins": { "type": "number" },
         "initialTransitMins": { "type": "number" },
         "routeExecutionMins": { "type": "number" },
         "routeExecutionNetMins": { "type": "number" },
         "returnTransitMins": { "type": "number" },
+        "totalTransitMins": { "type": "number" },
         "totalOperationMins": { "type": "number" },
         "totalOperationNetMins": { "type": "number" },
         "refillTotalMins": { "type": "number" },
         "mechanicalBreakdownTotalMins": { "type": "number" },
+        "weightTons": { "type": "number" },
         "createdAt": { "type": "string", "maxLength": 50 },
         "updatedAt": { "type": "string", "maxLength": 50 }
       },
       "required": ["date", "workGroupId", "driverId", "driverName", "vehicleNumber", "createdByUserId", "status", "t1StartShiftAt"]
+    },
+    "BreakdownAuditLog": {
+      "title": "BreakdownAuditLog",
+      "description": "Audit log of mechanical breakdown alarms and user acknowledgements.",
+      "type": "object",
+      "properties": {
+        "shiftId": { "type": "string", "maxLength": 128 },
+        "breakdownId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 20 },
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "workGroupName": { "type": "string", "maxLength": 100 },
+        "vehicleNumber": { "type": "string", "maxLength": 50 },
+        "routeCode": { "type": "string", "maxLength": 50 },
+        "routeName": { "type": "string", "maxLength": 100 },
+        "driverId": { "type": "string", "maxLength": 128 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "incidentType": { "type": "string", "maxLength": 50 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "reportedAt": { "type": "string", "maxLength": 50 },
+        "reportedByUserId": { "type": "string", "maxLength": 128 },
+        "reportedByUsername": { "type": "string", "maxLength": 100 },
+        "reportedByName": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["PENDIENTE", "ACEPTADA"] },
+        "acknowledgedAt": { "type": "string", "maxLength": 50 },
+        "acknowledgedByUserId": { "type": "string", "maxLength": 128 },
+        "acknowledgedByUsername": { "type": "string", "maxLength": 100 },
+        "acknowledgedByFullName": { "type": "string", "maxLength": 120 },
+        "acknowledgedByRole": { "type": "string", "maxLength": 40 },
+        "acknowledgementNotes": { "type": "string", "maxLength": 300 },
+        "resolvedAt": { "type": "string", "maxLength": 50 },
+        "resolvedByUserId": { "type": "string", "maxLength": 128 },
+        "resolvedByUsername": { "type": "string", "maxLength": 100 },
+        "resolvedReportedBy": { "type": "string", "maxLength": 150 },
+        "resolutionNotes": { "type": "string", "maxLength": 300 },
+        "durationMins": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["shiftId", "breakdownId", "date", "workGroupId", "vehicleNumber", "driverName", "incidentType", "reportedAt", "status"]
     }
   },
   "firestore": {
@@ -170,6 +222,10 @@
     "driver_shifts": {
       "schema": "DriverShift",
       "description": "Stores driver operational time shifts, pauses, and mechanical breakdowns."
+    },
+    "breakdown_audit_logs": {
+      "schema": "BreakdownAuditLog",
+      "description": "Stores mechanical breakdown alarm audit logs and controller acknowledgements."
     }
   }
 }

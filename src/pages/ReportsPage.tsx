@@ -1,21 +1,32 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { exportToCsv } from '../utils/exportCsv';
 import { 
   BarChart2, Download, Users, Truck, CheckCircle, 
   AlertTriangle, XCircle, PieChart as PieChartIcon, 
-  X, Clock, MapPin, Layers, Info, Smartphone
+  X, Clock, MapPin, Layers, Info, Smartphone,
+  ChevronLeft, ChevronRight, LayoutGrid
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
-import { Assignment, Incident, RouteDef, Vehicle, Employee } from '../types';
+import { Assignment, DriverShift, Incident, RouteDef, Vehicle, Employee } from '../types';
 import { AttendanceIncidentsReportView } from '../components/reports/AttendanceIncidentsReportView';
 import { FleetAssetsReportView } from '../components/reports/FleetAssetsReportView';
 import { CustomExportReportView } from '../components/reports/CustomExportReportView';
 import { DriverShiftsReportView } from '../components/reports/DriverShiftsReportView';
+import { OperationsBoardView } from '../components/reports/OperationsBoardView';
 import { ReportSubMenuHeader } from '../components/reports/ReportSubMenuHeader';
+import {
+  computeShiftTimeBreakdown,
+  calcUnionPauseOverlapMs,
+  getRouteAlertFromTimestamps,
+  parseAssignmentIncidentInterval,
+  formatMsAsHoursMins,
+  TimeIntervalEvent,
+  RouteAlertLevel,
+} from '../utils/shiftTimeMetrics';
 
-type ReportSubTab = 'attendance' | 'fleet' | 'export_wizard' | 'general' | 'driver_shifts';
+type ReportSubTab = 'board' | 'attendance' | 'fleet' | 'export_wizard' | 'general' | 'driver_shifts';
 type DetailModalType = 
   | 'rutas_asignadas' 
   | 'rutas_todas' 
@@ -35,11 +46,18 @@ export const ReportsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ReportSubTab>('attendance');
   const [activeDetail, setActiveDetail] = useState<DetailModalType>(null);
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
+  const sheetTabsRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollSheetTabs = (direction: 'left' | 'right') => {
+    if (!sheetTabsRef.current) return;
+    const offset = direction === 'left' ? -240 : 240;
+    sheetTabsRef.current.scrollBy({ left: offset, behavior: 'smooth' });
+  };
   
-  // Real-time ticking for in-progress operations
+  // Real-time ticking for in-progress operations & 8h/10h alerts
   const [nowMs, setNowMs] = useState(Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 60000); // Update every minute
+    const timer = setInterval(() => setNowMs(Date.now()), 30000);
     return () => clearInterval(timer);
   }, []);
 
@@ -118,12 +136,10 @@ export const ReportsPage: React.FC = () => {
     const assignedEmployeeIdsSet = new Set(relevantAssignments.flatMap(a => a.employeeIds || []));
     const assignedEmployeesCount = relevantEmployees.filter(e => assignedEmployeeIdsSet.has(e.id)).length;
 
-    // Incidents & Weight
+    // Incidents
     let totalIncidents = 0;
-    let totalWeightTons = 0;
     relevantAssignments.forEach(a => {
       totalIncidents += (a.incidents || []).length;
-      if (a.weightTons) totalWeightTons += a.weightTons;
     });
 
     // Assignment Status Chart Data
@@ -152,24 +168,110 @@ export const ReportsPage: React.FC = () => {
     // Step-by-Step Operational Time Calculations (Statistician Metrics)
     let sumWaitMins = 0, countWait = 0;
     let sumTransitMins = 0, countTransit = 0;
-    let sumExecMins = 0, countExec = 0;
+    let sumExecNetMins = 0, countExec = 0;
+    let sumExecGrossMins = 0;
     let sumCycleMins = 0, countCycle = 0;
+    let sumBreakdownMins = 0;
+    let sumRefillMins = 0;
+    let sumDeductedMins = 0;
 
     let earliestTimeMs = Infinity;
     let latestTimeMs = -Infinity;
 
-    const timeBreakdownAssignments = relevantAssignments.map(a => {
-      // Find timestamps from explicit fields or status history
+    // Matching DriverShifts for the selected group, routes, and date window
+    const filteredRouteCodeSet = new Set(filteredRoutes.map(r => r.code.toLowerCase()));
+    const relevantDriverShifts = state.driverShifts.filter(s => {
+      if (state.activeWorkGroupId && s.workGroupId !== state.activeWorkGroupId) return false;
+      if (selectedRouteIds.length > 0) {
+        const matchesId = s.routeId && filteredRouteIds.has(s.routeId);
+        const matchesCode = s.routeCode && filteredRouteCodeSet.has(s.routeCode.toLowerCase());
+        if (!matchesId && !matchesCode) return false;
+      }
+      const isInRange = s.date >= selectedDate && s.date <= selectedEndDate;
+      const isPastUnfinished = s.date < selectedDate && s.status !== 'EN_BASE';
+      return isInRange || isPastUnfinished;
+    });
+
+    const usedShiftIds = new Set<string>();
+
+    const formatTime = (tsStr?: string | null) => {
+      if (!tsStr) return '';
+      const d = new Date(tsStr);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
+
+    interface TimeBreakdownRow {
+      rowId: string;
+      assignment?: Assignment;
+      shift?: DriverShift;
+      date: string;
+      routeCode: string;
+      routeName: string;
+      routeOrigin: string;
+      routeDestination: string;
+      groupName: string;
+      vehicleNumber: string;
+      crewName: string;
+      statusLabel: string;
+      weightTons: number;
+      waitMins: number | null;
+      initTransitMins: number | null;
+      finalTransitMins: number | null;
+      totalTransitMins: number | null;
+      execGrossMins: number | null;
+      execMins: number | null;
+      deductedMins: number;
+      breakdownMins: number;
+      refillMins: number;
+      totalNovedadesMins: number;
+      cycleMins: number | null;
+      efficiency: number | null;
+      tAsigStr: string;
+      tSalidaStr: string;
+      tInicioStr: string;
+      tFinStr: string;
+      tBaseStr: string;
+      isRouteActive: boolean;
+      routeElapsedMs: number;
+      activeAlertLevel: RouteAlertLevel;
+      overallAlertLevel: RouteAlertLevel;
+    }
+
+    const timeBreakdownAssignments: TimeBreakdownRow[] = relevantAssignments.map(a => {
+      const asigDate = a.date.slice(0, 10);
+      const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
+      const route = state.routes.find(r => r.id === a.routeId);
+      const group = state.workGroups.find(g => g.id === a.workGroupId);
+      const crew = state.crews.find(c => (a.employeeIds || []).includes(c.driverId));
+
+      // Try matching an unused DriverShift for this assignment
+      const matchedShift =
+        relevantDriverShifts.find(s => {
+          if (usedShiftIds.has(s.id) || s.isSupportShift) return false;
+          if (s.date !== asigDate) return false;
+          if (a.workGroupId && s.workGroupId !== a.workGroupId) return false;
+          if (s.vehicleId && s.vehicleId === a.vehicleId) return true;
+          if (vehicle?.internalNumber && s.vehicleNumber.toLowerCase() === vehicle.internalNumber.toLowerCase()) return true;
+          if (s.driverId && (a.employeeIds || []).includes(s.driverId)) return true;
+          return false;
+        }) || null;
+
+      if (matchedShift) {
+        usedShiftIds.add(matchedShift.id);
+      }
+
+      // Find timestamps from explicit fields, status history, or matched DriverShift
       const historyMap: Record<string, string> = {};
       (a.statusHistory || []).forEach(h => {
         if (!historyMap[h.status]) historyMap[h.status] = h.timestamp;
       });
 
       const tAsigStr = a.createdAt || a.date;
-      const tSalidaStr = a.salidaBaseAt || historyMap['Salida de Base'];
-      const tInicioStr = a.inicioRutaAt || historyMap['Inicio de Ruta'];
-      const tFinStr = a.finRutaAt || historyMap['Fin de Ruta'];
-      const tBaseStr = a.llegadaBaseAt || historyMap['Base'];
+      const tSalidaStr = a.salidaBaseAt || historyMap['Salida de Base'] || matchedShift?.t1StartShiftAt;
+      const tInicioStr = a.inicioRutaAt || historyMap['Inicio de Ruta'] || matchedShift?.t2StartRouteAt || undefined;
+      const tFinStr = a.finRutaAt || historyMap['Fin de Ruta'] || matchedShift?.t3EndRouteAt || undefined;
+      const tBaseStr = a.llegadaBaseAt || historyMap['Base'] || matchedShift?.t4ArriveBaseAt || undefined;
 
       const tAsig = tAsigStr ? new Date(tAsigStr).getTime() : NaN;
       const tSalida = tSalidaStr ? new Date(tSalidaStr).getTime() : NaN;
@@ -183,100 +285,256 @@ export const ReportsPage: React.FC = () => {
       if (!isNaN(tBase) && tBase > latestTimeMs) latestTimeMs = tBase;
       if (!isNaN(tFin) && tFin > latestTimeMs) latestTimeMs = tFin;
 
-      // Real-time Phase Calculations
       // Phase 1: Wait time for departure (Asignación -> Salida Base)
-      let waitMins = null;
+      let waitMins: number | null = null;
       if (!isNaN(tAsig)) {
         if (!isNaN(tSalida)) {
           if (tSalida >= tAsig) waitMins = Math.round((tSalida - tAsig) / 60000);
         } else {
-          // Waiting for departure (ongoing)
           waitMins = Math.max(0, Math.round((nowMs - tAsig) / 60000));
         }
       }
 
-      // Phase 2: Initial Transit (Salida Base -> Inicio Ruta)
-      let initTransitMins = null;
+      // Phase 2: Initial Transit (Inicio Turno / Salida Base -> Inicio Ruta)
+      let initTransitMins: number | null = null;
       if (!isNaN(tSalida)) {
         if (!isNaN(tInicio)) {
           if (tInicio >= tSalida) initTransitMins = Math.round((tInicio - tSalida) / 60000);
         } else {
-          // Initial Transit (ongoing)
           initTransitMins = Math.max(0, Math.round((nowMs - tSalida) / 60000));
         }
       }
 
-      // Phase 3: Route Execution (Inicio Ruta -> Fin Ruta)
-      let execMins = null;
-      if (!isNaN(tInicio)) {
-        if (!isNaN(tFin)) {
-          if (tFin >= tInicio) execMins = Math.round((tFin - tInicio) / 60000);
-        } else {
-          // Route Execution (ongoing)
-          execMins = Math.max(0, Math.round((nowMs - tInicio) / 60000));
-        }
-      }
-
       // Phase 4: Final Transit (Fin Ruta -> Llegada Base)
-      let finalTransitMins = null;
+      let finalTransitMins: number | null = null;
       if (!isNaN(tFin)) {
         if (!isNaN(tBase)) {
           if (tBase >= tFin) finalTransitMins = Math.round((tBase - tFin) / 60000);
         } else {
-          // Final Transit (ongoing)
           finalTransitMins = Math.max(0, Math.round((nowMs - tFin) / 60000));
         }
       }
 
-      // Total Transit Time
-      const totalTransitMins = (initTransitMins !== null || finalTransitMins !== null)
-        ? (initTransitMins || 0) + (finalTransitMins || 0)
-        : null;
+      // Tiempo Total de Desplazamiento = (Inicio Turno -> Inicio Ruta) + (Fin Ruta -> Base)
+      const totalTransitMins =
+        initTransitMins !== null || finalTransitMins !== null
+          ? (initTransitMins || 0) + (finalTransitMins || 0)
+          : null;
+
+      // Collect incident intervals from Assignment (breakdowns / refills / other novelties)
+      const asigMechIntervals: TimeIntervalEvent[] = [];
+      const asigRefillIntervals: TimeIntervalEvent[] = [];
+      const asigAllIntervals: TimeIntervalEvent[] = [];
+      let totalAssignmentIncidentsMins = 0;
+
+      (a.incidents || []).forEach(inc => {
+        const parsed = parseAssignmentIncidentInterval(inc, asigDate);
+        totalAssignmentIncidentsMins += parsed.durationMins;
+        if (parsed.startMs !== null && parsed.endMs !== null && parsed.endMs > parsed.startMs) {
+          const ev: TimeIntervalEvent = {
+            startAt: new Date(parsed.startMs).toISOString(),
+            endAt: new Date(parsed.endMs).toISOString(),
+          };
+          asigAllIntervals.push(ev);
+          const typeNorm = (inc.type || '').toLowerCase();
+          const descNorm = (inc.description || '').toLowerCase();
+          if (typeNorm.includes('mecán') || typeNorm.includes('mecan') || typeNorm.includes('aver')) {
+            asigMechIntervals.push(ev);
+          } else if (
+            typeNorm.includes('rellen') ||
+            typeNorm.includes('descarg') ||
+            descNorm.includes('rellen') ||
+            descNorm.includes('descarg')
+          ) {
+            asigRefillIntervals.push(ev);
+          }
+        }
+      });
+
+      const shiftBreakdown = matchedShift ? computeShiftTimeBreakdown(matchedShift, nowMs) : null;
+      const horizonEndMs = nowMs + 24 * 60 * 60 * 1000;
+
+      const breakdownMins = matchedShift
+        ? Math.max(
+            shiftBreakdown!.totalBreakdownMins,
+            Math.round(
+              calcUnionPauseOverlapMs([matchedShift.breakdownEvents, asigMechIntervals], 0, horizonEndMs, nowMs) / 60000
+            )
+          )
+        : Math.round(calcUnionPauseOverlapMs([asigMechIntervals], 0, horizonEndMs, nowMs) / 60000);
+
+      const refillMins = matchedShift
+        ? Math.max(
+            shiftBreakdown!.totalRefillMins,
+            Math.round(
+              calcUnionPauseOverlapMs([matchedShift.refillEvents, asigRefillIntervals], 0, horizonEndMs, nowMs) / 60000
+            )
+          )
+        : Math.round(calcUnionPauseOverlapMs([asigRefillIntervals], 0, horizonEndMs, nowMs) / 60000);
+
+      // Phase 3: Route Execution (Inicio Ruta -> Fin Ruta) deducting Averías / Rellenos / Apoyos without double-counting
+      let execGrossMins: number | null = null;
+      let execMins: number | null = null;
+      let deductedMins = 0;
+
+      if (!isNaN(tInicio)) {
+        const endRefMs = !isNaN(tFin) && tFin >= tInicio ? tFin : nowMs;
+        const grossMs = Math.max(0, endRefMs - tInicio);
+        execGrossMins = Math.round(grossMs / 60000);
+
+        const pauseLists: Array<TimeIntervalEvent[] | undefined> = [
+          matchedShift?.breakdownEvents,
+          matchedShift?.refillEvents,
+          matchedShift?.supportEvents,
+          asigAllIntervals,
+        ];
+        const deductedMs = calcUnionPauseOverlapMs(pauseLists, tInicio, endRefMs, nowMs);
+        deductedMins = Math.round(deductedMs / 60000);
+        execMins = Math.max(0, Math.round((grossMs - deductedMs) / 60000));
+      }
 
       // Total Cycle Time (Asignación -> Base)
-      let cycleMins = null;
+      let cycleMins: number | null = null;
       if (!isNaN(tAsig)) {
-        if (!isNaN(tBase)) {
-          if (tBase >= tAsig) cycleMins = Math.round((tBase - tAsig) / 60000);
+        if (!isNaN(tBase) && tBase >= tAsig) {
+          cycleMins = Math.round((tBase - tAsig) / 60000);
         } else {
-          // Cycle (ongoing)
           cycleMins = Math.max(0, Math.round((nowMs - tAsig) / 60000));
         }
       }
 
-      // Accumulate for averages
+      const routeAlert = getRouteAlertFromTimestamps(
+        tInicioStr,
+        tFinStr || (a.status === 'Base' ? tBaseStr : null),
+        nowMs
+      );
+
+      // Accumulate totals & averages
       if (waitMins !== null) { sumWaitMins += waitMins; countWait++; }
       if (totalTransitMins !== null) { sumTransitMins += totalTransitMins; countTransit++; }
-      if (execMins !== null) { sumExecMins += execMins; countExec++; }
+      if (execGrossMins !== null) { sumExecGrossMins += execGrossMins; }
+      if (execMins !== null) { sumExecNetMins += execMins; countExec++; }
       if (cycleMins !== null) { sumCycleMins += cycleMins; countCycle++; }
+      sumBreakdownMins += breakdownMins;
+      sumRefillMins += refillMins;
+      sumDeductedMins += deductedMins;
 
-      const efficiency = (execMins && cycleMins && cycleMins > 0)
-        ? Math.round((execMins / cycleMins) * 100)
-        : null;
-
-      const formatTime = (tsStr?: string) => {
-        if (!tsStr) return '';
-        const d = new Date(tsStr);
-        if (isNaN(d.getTime())) return '';
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      };
+      const efficiency =
+        execMins !== null && cycleMins && cycleMins > 0
+          ? Math.round((execMins / cycleMins) * 100)
+          : null;
 
       return {
+        rowId: a.id,
         assignment: a,
+        shift: matchedShift || undefined,
+        date: a.date,
+        routeCode: route?.code || 'R',
+        routeName: route?.name || 'N/A',
+        routeOrigin: route?.origin || 'N/A',
+        routeDestination: route?.destination || 'N/A',
+        groupName: group?.name || 'N/A',
+        vehicleNumber: vehicle?.internalNumber || matchedShift?.vehicleNumber || 'N/A',
+        crewName: crew?.name || matchedShift?.driverName || 'Sin Tripulación',
+        statusLabel: a.status,
+        weightTons:
+          a.weightTons !== undefined && a.weightTons > 0
+            ? a.weightTons
+            : (matchedShift?.weightTons ?? 0),
         waitMins,
         initTransitMins,
-        execMins,
         finalTransitMins,
         totalTransitMins,
+        execGrossMins,
+        execMins,
+        deductedMins,
+        breakdownMins,
+        refillMins,
+        totalNovedadesMins: Math.max(totalAssignmentIncidentsMins, breakdownMins + refillMins),
         cycleMins,
         efficiency,
         tAsigStr: formatTime(tAsigStr),
         tSalidaStr: formatTime(tSalidaStr),
         tInicioStr: formatTime(tInicioStr),
         tFinStr: formatTime(tFinStr),
-        tBaseStr: formatTime(tBaseStr)
+        tBaseStr: formatTime(tBaseStr),
+        isRouteActive: routeAlert.isActive,
+        routeElapsedMs: routeAlert.elapsedMs,
+        activeAlertLevel: routeAlert.activeLevel,
+        overallAlertLevel: routeAlert.overallLevel,
       };
     });
+
+    // Include remaining DriverShifts that have no linked Assignment record so General Report reflects 100% of driver shifts
+    relevantDriverShifts.forEach(s => {
+      if (usedShiftIds.has(s.id)) return;
+      const tb = computeShiftTimeBreakdown(s, nowMs);
+      const route = s.routeId
+        ? state.routes.find(r => r.id === s.routeId)
+        : state.routes.find(r => s.routeCode && r.code.toLowerCase() === s.routeCode.toLowerCase());
+      const group = state.workGroups.find(g => g.id === s.workGroupId);
+
+      const t1 = s.t1StartShiftAt ? new Date(s.t1StartShiftAt).getTime() : NaN;
+      const t3 = s.t3EndRouteAt ? new Date(s.t3EndRouteAt).getTime() : NaN;
+      const t4 = s.t4ArriveBaseAt ? new Date(s.t4ArriveBaseAt).getTime() : NaN;
+      if (!isNaN(t1) && t1 < earliestTimeMs) earliestTimeMs = t1;
+      if (!isNaN(t4) && t4 > latestTimeMs) latestTimeMs = t4;
+      if (!isNaN(t3) && t3 > latestTimeMs) latestTimeMs = t3;
+
+      if (tb.totalTransitMins !== null) { sumTransitMins += tb.totalTransitMins; countTransit++; }
+      if (tb.routeGrossMins !== null) { sumExecGrossMins += tb.routeGrossMins; }
+      if (tb.routeNetMins !== null) { sumExecNetMins += tb.routeNetMins; countExec++; }
+      const opCycle = tb.totalOperationMins;
+      if (opCycle !== null) { sumCycleMins += opCycle; countCycle++; }
+      sumBreakdownMins += tb.totalBreakdownMins;
+      sumRefillMins += tb.totalRefillMins;
+      sumDeductedMins += tb.routeDeductedMins;
+
+      const efficiency =
+        tb.routeNetMins !== null && opCycle && opCycle > 0
+          ? Math.round((tb.routeNetMins / opCycle) * 100)
+          : null;
+
+      timeBreakdownAssignments.push({
+        rowId: `shift_${s.id}`,
+        shift: s,
+        date: s.date,
+        routeCode: s.routeCode || route?.code || 'S/R',
+        routeName: s.routeName || route?.name || (s.isSupportShift ? 'Apoyo en Ruta' : 'Ruta Conductor'),
+        routeOrigin: route?.origin || 'Base',
+        routeDestination: route?.destination || 'Ruta',
+        groupName: s.workGroupName || group?.name || 'N/A',
+        vehicleNumber: s.vehicleNumber,
+        crewName: s.driverName,
+        statusLabel: s.status,
+        weightTons: s.weightTons ?? 0,
+        waitMins: null,
+        initTransitMins: tb.initialTransitMins,
+        finalTransitMins: tb.returnTransitMins,
+        totalTransitMins: tb.totalTransitMins,
+        execGrossMins: tb.routeGrossMins,
+        execMins: tb.routeNetMins,
+        deductedMins: tb.routeDeductedMins,
+        breakdownMins: tb.totalBreakdownMins,
+        refillMins: tb.totalRefillMins,
+        totalNovedadesMins: tb.totalBreakdownMins + tb.totalRefillMins,
+        cycleMins: opCycle,
+        efficiency,
+        tAsigStr: formatTime(s.t1StartShiftAt),
+        tSalidaStr: formatTime(s.t1StartShiftAt),
+        tInicioStr: formatTime(s.t2StartRouteAt),
+        tFinStr: formatTime(s.t3EndRouteAt),
+        tBaseStr: formatTime(s.t4ArriveBaseAt),
+        isRouteActive: tb.isRouteActive,
+        routeElapsedMs: tb.routeElapsedMs,
+        activeAlertLevel: tb.activeAlertLevel,
+        overallAlertLevel: tb.overallAlertLevel,
+      });
+    });
+
+    const totalWeightTons = Number(
+      timeBreakdownAssignments.reduce((sum, r) => sum + (r.weightTons || 0), 0).toFixed(2)
+    );
 
     // Group Total Operational Window Metric ("Tiempo Total del Grupo")
     const groupTotalMins = (earliestTimeMs !== Infinity && latestTimeMs !== -Infinity && latestTimeMs >= earliestTimeMs)
@@ -289,11 +547,16 @@ export const ReportsPage: React.FC = () => {
 
     const avgWaitMins = countWait > 0 ? Math.round(sumWaitMins / countWait) : 0;
     const avgTransitMins = countTransit > 0 ? Math.round(sumTransitMins / countTransit) : 0;
-    const avgExecMins = countExec > 0 ? Math.round(sumExecMins / countExec) : 0;
-    
-    // Overall Operational Efficiency Score
-    const globalEfficiency = (sumExecMins > 0 && sumCycleMins > 0)
-      ? Math.round((sumExecMins / sumCycleMins) * 100)
+    const avgExecMins = countExec > 0 ? Math.round(sumExecNetMins / countExec) : 0;
+
+    const activeCriticalAlerts = timeBreakdownAssignments.filter(r => r.activeAlertLevel === 'critical');
+    const activeWarningAlerts = timeBreakdownAssignments.filter(r => r.activeAlertLevel === 'warning');
+    const overallCriticalCount = timeBreakdownAssignments.filter(r => r.overallAlertLevel === 'critical').length;
+    const overallWarningCount = timeBreakdownAssignments.filter(r => r.overallAlertLevel === 'warning').length;
+
+    // Overall Operational Efficiency Score (based on Net Route Execution vs Cycle)
+    const globalEfficiency = (sumExecNetMins > 0 && sumCycleMins > 0)
+      ? Math.round((sumExecNetMins / sumCycleMins) * 100)
       : (countExec > 0 ? 78 : 0);
 
     return {
@@ -320,52 +583,64 @@ export const ReportsPage: React.FC = () => {
       timeBreakdownAssignments,
       groupTotalHoursStr,
       avgWaitMins,
+      sumWaitMins,
       avgTransitMins,
+      sumTransitMins,
       avgExecMins,
+      sumExecGrossMins,
+      sumExecNetMins,
+      sumBreakdownMins,
+      sumRefillMins,
+      sumDeductedMins,
+      activeCriticalAlerts,
+      activeWarningAlerts,
+      overallCriticalCount,
+      overallWarningCount,
       globalEfficiency
     };
-  }, [state.assignments, state.routes, state.vehicles, state.employees, state.activeWorkGroupId, selectedRouteIds, activeGroupRoutes, selectedDate, selectedEndDate, nowMs]);
+  }, [state.assignments, state.driverShifts, state.routes, state.vehicles, state.employees, state.workGroups, state.crews, state.activeWorkGroupId, selectedRouteIds, activeGroupRoutes, selectedDate, selectedEndDate, nowMs]);
 
   // Export functions
   const handleExportIndicators = () => {
-    const data = metrics.relevantAssignments.map(a => {
-      const route = state.routes.find(r => r.id === a.routeId);
-      const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
-      const group = state.workGroups.find(g => g.id === a.workGroupId);
-      const crew = state.crews.find(c => a.employeeIds.includes(c.driverId));
-      
-      const timeData = metrics.timeBreakdownAssignments.find(tb => tb.assignment.id === a.id);
-      
-      const totalNovedadesMins = (a.incidents || []).reduce((sum, inc) => {
-        if (!inc.startTime || !inc.endTime) return sum;
-        const start = new Date(inc.startTime).getTime();
-        const end = new Date(inc.endTime).getTime();
-        return sum + Math.max(0, Math.round((end - start) / 60000));
-      }, 0);
-      
+    const data = metrics.timeBreakdownAssignments.map(row => {
+      const alertLabel =
+        row.overallAlertLevel === 'critical'
+          ? `CRÍTICA (+10h · ${formatMsAsHoursMins(row.routeElapsedMs)})`
+          : row.overallAlertLevel === 'warning'
+            ? `ALERTA (+8h · ${formatMsAsHoursMins(row.routeElapsedMs)})`
+            : 'Normal';
+
       return {
-        Fecha: a.date,
-        'Ruta (Key)': route?.name || 'N/A',
-        Grupo: group?.name || 'N/A',
-        Origen: route?.origin || 'N/A',
-        Destino: route?.destination || 'N/A',
-        'Móvil': vehicle?.internalNumber || 'N/A',
-        'ID Tripulación': crew?.name || 'Sin Tripulación',
-        Estado: a.status,
-        'Novedades (min)': totalNovedadesMins,
-        'Peso (Tons)': a.weightTons !== undefined ? a.weightTons : 0,
-        'Hora Asignación': timeData?.tAsigStr || '',
-        '1. Espera Salida (min)': timeData?.waitMins !== null ? timeData?.waitMins : '',
-        'Hora Salida Base': timeData?.tSalidaStr || '',
-        '2. Desplazamiento (min)': timeData?.totalTransitMins !== null ? timeData?.totalTransitMins : '',
-        'Hora Inicio Ejecucion': timeData?.tInicioStr || '',
-        '3. Ejecucion Ruta (min)': timeData?.execMins !== null ? timeData?.execMins : '',
-        'Hora Llegada Base': timeData?.tBaseStr || '',
-        'Ciclo Total (min)': timeData?.cycleMins !== null ? timeData?.cycleMins : '',
-        'Eficiencia (%)': timeData?.efficiency !== null ? timeData?.efficiency : ''
+        Fecha: row.date,
+        'Ruta (Key)': row.routeName,
+        Grupo: row.groupName,
+        Origen: row.routeOrigin,
+        Destino: row.routeDestination,
+        'Móvil': row.vehicleNumber,
+        'ID Tripulación': row.crewName,
+        Estado: row.statusLabel,
+        'Averías (min)': row.breakdownMins,
+        'Rellenos (min)': row.refillMins,
+        'Novedades (min)': row.totalNovedadesMins,
+        'Peso (Tons)': row.weightTons,
+        'Hora Asignación': row.tAsigStr,
+        '1. Espera Salida (min)': row.waitMins !== null ? row.waitMins : '',
+        'Hora Salida Base': row.tSalidaStr,
+        'Desplazamiento Ida (min)': row.initTransitMins !== null ? row.initTransitMins : '',
+        'Desplazamiento Retorno (min)': row.finalTransitMins !== null ? row.finalTransitMins : '',
+        '2. Desplazamiento Total (min)': row.totalTransitMins !== null ? row.totalTransitMins : '',
+        'Hora Inicio Ejecucion': row.tInicioStr,
+        'Ruta Bruta (min)': row.execGrossMins !== null ? row.execGrossMins : '',
+        'Descuento Averías/Rellenos (min)': row.deductedMins,
+        '3. Ejecucion Ruta Neta (min)': row.execMins !== null ? row.execMins : '',
+        'Hora Fin Ruta': row.tFinStr,
+        'Hora Llegada Base': row.tBaseStr,
+        'Alerta Duración Ruta': alertLabel,
+        'Ciclo Total (min)': row.cycleMins !== null ? row.cycleMins : '',
+        'Eficiencia (%)': row.efficiency !== null ? row.efficiency : ''
       };
     });
-    
+
     // Sort by Fecha then Ruta
     data.sort((a, b) => {
       if (a.Fecha !== b.Fecha) return b.Fecha.localeCompare(a.Fecha);
@@ -405,7 +680,21 @@ export const ReportsPage: React.FC = () => {
     exportToCsv(`personal_${state.activeWorkGroupId || 'general'}_${new Date().getTime()}.csv`, data);
   };
 
-  const tabs: { id: ReportSubTab; label: string; icon: React.ReactNode; badge?: string }[] = [
+  const unacknowledgedAlarmsCount = useMemo(() => {
+    return state.driverShifts.reduce((acc, s) => {
+      const pending = (s.breakdownEvents || []).filter(ev => !ev.acknowledgedAt).length;
+      return acc + pending;
+    }, 0);
+  }, [state.driverShifts]);
+
+  const tabs: { id: ReportSubTab; label: string; icon: React.ReactNode; badge?: string; alertBadge?: boolean }[] = [
+    {
+      id: 'board',
+      label: 'Tablero en Vivo',
+      icon: <LayoutGrid className="h-4 w-4" />,
+      badge: unacknowledgedAlarmsCount > 0 ? `${unacknowledgedAlarmsCount} alerta` : `${state.driverShifts.filter(s => s.date === new Date().toLocaleDateString('en-CA')).length} hoy`,
+      alertBadge: unacknowledgedAlarmsCount > 0,
+    },
     {
       id: 'fleet',
       label: 'Flota Vehicular',
@@ -438,36 +727,67 @@ export const ReportsPage: React.FC = () => {
 
   return (
     <div className="space-y-0">
-      {/* Navigation Sub-Tabs */}
-      <div className="bg-slate-100 pt-2 px-2 flex flex-wrap gap-1 border-b border-slate-300">
-        {tabs.map(tab => {
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all border-t border-x rounded-t-lg -mb-px relative z-10 ${
-                isActive
-                  ? 'bg-white text-emerald-700 border-slate-300 shadow-sm'
-                  : 'bg-transparent text-slate-500 border-transparent hover:bg-slate-200/50'
-              }`}
-            >
-              <span className={isActive ? 'text-emerald-500' : 'text-slate-400'}>{tab.icon}</span>
-              <span>{tab.label}</span>
-              {tab.badge && (
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ml-2 ${
-                  isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'
-                }`}>
-                  {tab.badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      {/* Spreadsheet-style Horizontal Scrollable Sheet Tabs */}
+      <div className="bg-slate-200/80 pt-2 px-2 flex items-end gap-1 border-b border-slate-300 rounded-t-2xl">
+        <button
+          type="button"
+          onClick={() => scrollSheetTabs('left')}
+          className="mb-1 p-1.5 rounded-md bg-white/80 hover:bg-white border border-slate-300 text-slate-600 shrink-0 shadow-2xs transition-colors"
+          title="Desplazar hojas a la izquierda"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+
+        <div
+          ref={sheetTabsRef}
+          className="flex-1 flex items-end gap-1 overflow-x-auto flex-nowrap scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {tabs.map(tab => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`whitespace-nowrap shrink-0 flex items-center gap-2 px-4 py-2.5 text-xs font-bold transition-all border-t border-x rounded-t-lg -mb-px relative ${
+                  isActive
+                    ? 'bg-white text-emerald-700 border-slate-300 shadow-sm z-10'
+                    : 'bg-slate-100/80 text-slate-600 border-slate-300/60 hover:bg-white/70'
+                }`}
+              >
+                <span className={isActive ? 'text-emerald-600' : 'text-slate-400'}>{tab.icon}</span>
+                <span>{tab.label}</span>
+                {tab.badge && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded font-mono tabular-nums ${
+                      tab.alertBadge
+                        ? 'bg-rose-600 text-white'
+                        : isActive
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-slate-200 text-slate-600'
+                    }`}
+                  >
+                    {tab.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => scrollSheetTabs('right')}
+          className="mb-1 p-1.5 rounded-md bg-white/80 hover:bg-white border border-slate-300 text-slate-600 shrink-0 shadow-2xs transition-colors"
+          title="Desplazar hojas a la derecha"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Render Sub-View */}
-      <div className="bg-white p-4 sm:p-6 rounded-b-2xl border-x border-b border-slate-300 shadow-sm min-h-[600px]">
+      <div className={`bg-white rounded-b-2xl border-x border-b border-slate-300 shadow-sm min-h-[600px] ${activeTab === 'board' ? 'p-2.5 sm:p-3' : 'p-4 sm:p-6'}`}>
+        {activeTab === 'board' && <OperationsBoardView />}
         {activeTab === 'attendance' && <AttendanceIncidentsReportView />}
         {activeTab === 'fleet' && <FleetAssetsReportView />}
         {activeTab === 'driver_shifts' && <DriverShiftsReportView />}
@@ -624,8 +944,54 @@ export const ReportsPage: React.FC = () => {
                 </div>
               </div>
 
+              {/* Route Duration Alerts (> 8h Warning / > 10h Critical) */}
+              {(metrics.activeCriticalAlerts.length > 0 || metrics.activeWarningAlerts.length > 0) && (
+                <div className="space-y-2">
+                  {metrics.activeCriticalAlerts.length > 0 && (
+                    <div className="bg-rose-950/80 border border-rose-500/60 rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-rose-200 text-xs font-extrabold">
+                        <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                        <span>
+                          ALERTA CRÍTICA (+10h en Ruta): {metrics.activeCriticalAlerts.length} ruta(s) superan las 10 horas desde su inicio
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {metrics.activeCriticalAlerts.map(r => (
+                          <span
+                            key={`crit_${r.rowId}`}
+                            className="px-2 py-0.5 rounded bg-rose-600 text-white font-mono text-[11px] font-bold"
+                          >
+                            M.{r.vehicleNumber} ({r.routeCode}) · {formatMsAsHoursMins(r.routeElapsedMs)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {metrics.activeWarningAlerts.length > 0 && (
+                    <div className="bg-amber-950/70 border border-amber-500/60 rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-amber-200 text-xs font-extrabold">
+                        <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                        <span>
+                          ALERTA (+8h en Ruta): {metrics.activeWarningAlerts.length} ruta(s) superan las 8 horas desde su inicio
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {metrics.activeWarningAlerts.map(r => (
+                          <span
+                            key={`warn_${r.rowId}`}
+                            className="px-2 py-0.5 rounded bg-amber-500 text-slate-950 font-mono text-[11px] font-bold"
+                          >
+                            M.{r.vehicleNumber} ({r.routeCode}) · {formatMsAsHoursMins(r.routeElapsedMs)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Time Phase KPI Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                 <div className="bg-slate-800/80 border border-slate-700/80 p-4 rounded-2xl flex flex-col justify-between">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">T. Espera para Salida</span>
                   <div className="mt-2 flex items-baseline gap-2">
@@ -636,21 +1002,43 @@ export const ReportsPage: React.FC = () => {
                 </div>
 
                 <div className="bg-slate-800/80 border border-slate-700/80 p-4 rounded-2xl flex flex-col justify-between">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">T. Desplazamiento</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">T. Total Desplazamiento</span>
                   <div className="mt-2 flex items-baseline gap-2">
-                    <span className="text-2xl font-black text-blue-400">{metrics.avgTransitMins}</span>
-                    <span className="text-xs text-slate-400 font-semibold">min prom.</span>
+                    <span className="text-2xl font-black text-blue-400">{metrics.sumTransitMins}</span>
+                    <span className="text-xs text-slate-400 font-semibold">min totales</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 mt-1">Tránsito Base &rarr; Ruta &rarr; Base</span>
+                  <span className="text-[10px] text-slate-400 mt-1">
+                    Prom: {metrics.avgTransitMins} min · (Turno&rarr;Ruta + Fin&rarr;Base)
+                  </span>
                 </div>
 
                 <div className="bg-slate-800/80 border border-slate-700/80 p-4 rounded-2xl flex flex-col justify-between">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">T. Ejecución de Ruta</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">T. Neto en Ruta</span>
                   <div className="mt-2 flex items-baseline gap-2">
-                    <span className="text-2xl font-black text-emerald-400">{metrics.avgExecMins}</span>
-                    <span className="text-xs text-slate-400 font-semibold">min prom.</span>
+                    <span className="text-2xl font-black text-emerald-400">{metrics.sumExecNetMins}</span>
+                    <span className="text-xs text-slate-400 font-semibold">min netos</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 mt-1">Servicio Operativo Efectivo</span>
+                  <span className="text-[10px] text-slate-400 mt-1">
+                    Prom: {metrics.avgExecMins}m · Desc. -{metrics.sumDeductedMins}m nov.
+                  </span>
+                </div>
+
+                <div className="bg-slate-800/80 border border-slate-700/80 p-4 rounded-2xl flex flex-col justify-between">
+                  <span className="text-[10px] font-bold text-rose-300 uppercase tracking-wider">Total Tiempo Averías</span>
+                  <div className="mt-2 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-rose-400">{metrics.sumBreakdownMins}</span>
+                    <span className="text-xs text-slate-400 font-semibold">min totales</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 mt-1">Descontado dentro de ruta</span>
+                </div>
+
+                <div className="bg-slate-800/80 border border-slate-700/80 p-4 rounded-2xl flex flex-col justify-between">
+                  <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">Total Tiempo Rellenos</span>
+                  <div className="mt-2 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-purple-400">{metrics.sumRefillMins}</span>
+                    <span className="text-xs text-slate-400 font-semibold">min totales</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 mt-1">Descontado dentro de ruta</span>
                 </div>
 
                 <div className="bg-slate-800/80 border border-slate-700/80 p-4 rounded-2xl flex flex-col justify-between">
@@ -659,18 +1047,25 @@ export const ReportsPage: React.FC = () => {
                     <span className="text-2xl font-black text-indigo-400">{metrics.globalEfficiency}%</span>
                     <span className="text-xs text-slate-400 font-semibold">productividad</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 mt-1">% Tiempo en Ruta vs Ciclo Total</span>
+                  <span className="text-[10px] text-slate-500 mt-1">% Ruta Neta vs Ciclo Total</span>
                 </div>
               </div>
 
               {/* Detailed Operational Times Breakdown Table */}
               <div className="bg-slate-800/60 border border-slate-700 rounded-2xl overflow-hidden">
-                <div className="p-4 border-b border-slate-700 flex justify-between items-center">
+                <div className="p-4 border-b border-slate-700 flex flex-wrap justify-between items-center gap-2">
                   <h4 className="font-bold text-sm text-slate-200 flex items-center gap-2">
                     <Info className="h-4 w-4 text-emerald-400" />
-                    Desglose Individual de Tiempos por Asignación
+                    Desglose Individual de Tiempos por Operación
                   </h4>
-                  <span className="text-xs text-slate-400">{metrics.timeBreakdownAssignments.length} asignaciones registradas</span>
+                  <div className="flex items-center gap-3 text-xs text-slate-400">
+                    {(metrics.overallCriticalCount > 0 || metrics.overallWarningCount > 0) && (
+                      <span className="font-mono font-bold text-rose-300">
+                        Alertas: {metrics.overallCriticalCount} Críticas (+10h) · {metrics.overallWarningCount} Alerta (+8h)
+                      </span>
+                    )}
+                    <span>{metrics.timeBreakdownAssignments.length} operaciones registradas</span>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
@@ -678,59 +1073,97 @@ export const ReportsPage: React.FC = () => {
                       <tr>
                         <th className="p-3">Ruta Base</th>
                         <th className="p-3">Móvil</th>
-                        <th className="p-3">1. Espera Salida</th>
-                        <th className="p-3">2. Desplazamiento</th>
-                        <th className="p-3">3. Ejecución Ruta</th>
-                        <th className="p-3">Ciclo Total</th>
+                        <th className="p-3">1. Espera</th>
+                        <th className="p-3">2. Desplaz. Total</th>
+                        <th className="p-3">3. Ruta Neta (Bruto)</th>
+                        <th className="p-3">Averías</th>
+                        <th className="p-3">Rellenos</th>
+                        <th className="p-3">Alerta</th>
                         <th className="p-3 text-right">Eficiencia (%)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-700/50 text-slate-300">
-                      {metrics.timeBreakdownAssignments.map(({ assignment: a, waitMins, totalTransitMins, execMins, cycleMins, efficiency }) => {
-                        const route = state.routes.find(r => r.id === a.routeId);
-                        const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
-                        return (
-                          <tr key={a.id} className="hover:bg-slate-800/80 transition-colors">
-                            <td className="p-3">
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-[10px] bg-slate-700 text-emerald-400 px-1.5 py-0.5 rounded font-bold">{route?.code || 'R'}</span>
-                                <span className="font-bold text-white">{route?.name || 'Ruta'}</span>
-                              </div>
-                            </td>
-                            <td className="p-3">
-                              <span className="font-mono bg-slate-700 px-2 py-0.5 rounded text-slate-300">Móvil {vehicle?.internalNumber || 'N/A'}</span>
-                            </td>
-                            <td className="p-3">
-                              {waitMins !== null ? <span className="font-bold text-amber-400">{waitMins} min</span> : <span className="text-slate-600">-</span>}
-                            </td>
-                            <td className="p-3">
-                              {totalTransitMins !== null ? <span className="font-bold text-blue-400">{totalTransitMins} min</span> : <span className="text-slate-600">-</span>}
-                            </td>
-                            <td className="p-3">
-                              {execMins !== null ? <span className="font-bold text-emerald-400">{execMins} min</span> : <span className="text-slate-600">-</span>}
-                            </td>
-                            <td className="p-3">
-                              {cycleMins !== null ? <span className="font-bold text-white">{cycleMins} min</span> : <span className="text-slate-600">-</span>}
-                            </td>
-                            <td className="p-3 text-right">
-                              {efficiency !== null ? (
-                                <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
-                                  efficiency >= 70 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
-                                  efficiency >= 50 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
-                                  'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                                }`}>
-                                  {efficiency}%
+                      {metrics.timeBreakdownAssignments.map(row => (
+                        <tr key={row.rowId} className="hover:bg-slate-800/80 transition-colors">
+                          <td className="p-3">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-[10px] bg-slate-700 text-emerald-400 px-1.5 py-0.5 rounded font-bold">{row.routeCode}</span>
+                              <span className="font-bold text-white">{row.routeName}</span>
+                            </div>
+                          </td>
+                          <td className="p-3">
+                            <span className="font-mono bg-slate-700 px-2 py-0.5 rounded text-slate-300">Móvil {row.vehicleNumber}</span>
+                          </td>
+                          <td className="p-3 font-mono">
+                            {row.waitMins !== null ? <span className="font-bold text-amber-400">{row.waitMins}m</span> : <span className="text-slate-600">-</span>}
+                          </td>
+                          <td className="p-3 font-mono">
+                            {row.totalTransitMins !== null ? (
+                              <div>
+                                <span className="font-bold text-blue-400">{row.totalTransitMins}m</span>
+                                <span className="block text-[10px] text-slate-400">
+                                  ({row.initTransitMins ?? '—'}+{row.finalTransitMins ?? '—'})
                                 </span>
-                              ) : (
-                                <span className="text-slate-500">En proceso</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                              </div>
+                            ) : (
+                              <span className="text-slate-600">-</span>
+                            )}
+                          </td>
+                          <td className="p-3 font-mono">
+                            {row.execMins !== null ? (
+                              <div>
+                                <span className="font-bold text-emerald-400">{row.execMins}m</span>
+                                {row.execGrossMins !== null && row.deductedMins > 0 && (
+                                  <span className="block text-[10px] text-slate-400">
+                                    Bruto {row.execGrossMins}m (-{row.deductedMins}m)
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-600">-</span>
+                            )}
+                          </td>
+                          <td className="p-3 font-mono">
+                            <span className={row.breakdownMins > 0 ? 'font-bold text-rose-400' : 'text-slate-500'}>
+                              {row.breakdownMins}m
+                            </span>
+                          </td>
+                          <td className="p-3 font-mono">
+                            <span className={row.refillMins > 0 ? 'font-bold text-purple-400' : 'text-slate-500'}>
+                              {row.refillMins}m
+                            </span>
+                          </td>
+                          <td className="p-3">
+                            {row.overallAlertLevel === 'critical' ? (
+                              <span className="px-2 py-0.5 rounded font-bold text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap">
+                                CRÍTICA +10h{row.isRouteActive ? ' (Activa)' : ''}
+                              </span>
+                            ) : row.overallAlertLevel === 'warning' ? (
+                              <span className="px-2 py-0.5 rounded font-bold text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">
+                                ALERTA +8h{row.isRouteActive ? ' (Activa)' : ''}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 text-[10px]">Normal</span>
+                            )}
+                          </td>
+                          <td className="p-3 text-right">
+                            {row.efficiency !== null ? (
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                                row.efficiency >= 70 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                                row.efficiency >= 50 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+                                'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                              }`}>
+                                {row.efficiency}%
+                              </span>
+                            ) : (
+                              <span className="text-slate-500">En proceso</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
                       {metrics.timeBreakdownAssignments.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="p-6 text-center text-slate-400">
+                          <td colSpan={9} className="p-6 text-center text-slate-400">
                             No hay datos de tiempos operativos para la selección actual.
                           </td>
                         </tr>

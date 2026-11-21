@@ -1,5 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Truck, Map, Activity, BarChart2, Settings, Cloud, X, Menu, Clock, Radio, RefreshCw, Smartphone, ShieldCheck, LogOut, Lock } from 'lucide-react';
+import {
+  Truck,
+  Map,
+  Activity,
+  BarChart2,
+  Settings,
+  Cloud,
+  X,
+  Menu,
+  Clock,
+  Radio,
+  RefreshCw,
+  Smartphone,
+  ShieldCheck,
+  LogOut,
+  Lock,
+  Pin,
+  PinOff,
+  ChevronRight,
+} from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { SyncStatusModal } from './SyncStatusModal';
@@ -42,7 +61,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
   const [showSettings, setShowSettings] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSidebarHovered, setIsSidebarHovered] = useState(false);
+  const [isSidebarPinned, setIsSidebarPinned] = useState(false);
   const [emailInput, setEmailInput] = useState(state.backupEmail || '');
+
+  const isSidebarExpanded = isMobileMenuOpen || isSidebarPinned || isSidebarHovered;
 
   useEffect(() => {
     setEmailInput(state.backupEmail || '');
@@ -105,15 +128,70 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
         />
       )}
 
-      {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-800 flex flex-col transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="p-5 border-b border-slate-800">
-          <PromoambientalLogo variant="full" theme="dark" size="md" />
+      {/* Auto-Deploying Left Sidebar (64px icon rail at rest on desktop, auto-expands to 256px on hover/focus or when pinned) */}
+      <aside
+        onMouseEnter={() => setIsSidebarHovered(true)}
+        onMouseLeave={() => setIsSidebarHovered(false)}
+        onFocus={() => setIsSidebarHovered(true)}
+        onBlur={e => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setIsSidebarHovered(false);
+          }
+        }}
+        className={`fixed inset-y-0 left-0 z-50 bg-slate-900 border-r border-slate-800 flex flex-col transition-[width,transform,box-shadow] duration-200 ease-out ${
+          isMobileMenuOpen ? 'translate-x-0 w-64 shadow-2xl' : '-translate-x-full md:translate-x-0'
+        } ${
+          isSidebarPinned
+            ? 'md:relative md:w-64'
+            : isSidebarHovered
+              ? 'md:w-64 md:shadow-2xl'
+              : 'md:w-16'
+        }`}
+      >
+        {/* Brand Header + Pin Toggle */}
+        <div className={`border-b border-slate-800 flex items-center ${isSidebarExpanded ? 'p-4 justify-between' : 'py-4 px-2 justify-center'}`}>
+          {isSidebarExpanded ? (
+            <>
+              <div className="min-w-0">
+                <PromoambientalLogo variant="full" theme="dark" size="sm" />
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSidebarPinned(p => !p)}
+                title={isSidebarPinned ? 'Activar auto-despliegue al pasar el cursor' : 'Fijar menú lateral abierto'}
+                className={`hidden md:flex p-1.5 rounded-lg border text-xs transition-colors shrink-0 ${
+                  isSidebarPinned
+                    ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/30'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:bg-slate-700'
+                }`}
+              >
+                {isSidebarPinned ? <Pin className="h-3.5 w-3.5" /> : <PinOff className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+                title="Cerrar menú"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsSidebarPinned(true)}
+              title="Desplegar y fijar menú de módulos"
+              className="flex flex-col items-center gap-1 group"
+            >
+              <PromoEmblem size={34} />
+              <ChevronRight className="h-3.5 w-3.5 text-slate-500 group-hover:text-emerald-400 transition-colors" />
+            </button>
+          )}
         </div>
 
         {/* User Identity Card */}
-        {user && (
-          <div className="mx-4 mt-4 p-3 rounded-xl bg-slate-800/70 border border-slate-700/60">
+        {user && isSidebarExpanded && (
+          <div className="mx-3 mt-3 p-3 rounded-xl bg-slate-800/70 border border-slate-700/60">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-xs font-bold text-white truncate">{user.fullName || user.username}</p>
@@ -132,28 +210,43 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
           </div>
         )}
 
-        <nav className="flex-1 py-5 px-4 space-y-1.5 overflow-y-auto">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => handleNav(item.id)}
-              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors duration-150 ${
-                currentView === item.id
-                  ? 'bg-emerald-500 text-white font-bold shadow-md shadow-emerald-500/20'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <item.icon className={`h-5 w-5 ${currentView === item.id ? 'text-amber-300' : ''}`} />
-              <span>{item.label}</span>
-            </button>
-          ))}
+        {user && !isSidebarExpanded && (
+          <div
+            title={`${user.fullName || user.username} (@${user.username}) · ${ROLE_LABELS[user.role]}${lockedGroupName ? ` · Grupo ${lockedGroupName}` : ''}`}
+            className="mx-auto mt-3 h-9 w-9 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold text-emerald-300 uppercase shrink-0"
+          >
+            {(user.fullName || user.username).slice(0, 2)}
+          </div>
+        )}
+
+        <nav className={`flex-1 py-4 space-y-1.5 overflow-y-auto ${isSidebarExpanded ? 'px-3' : 'px-2'}`}>
+          {navItems.map((item) => {
+            const isActive = currentView === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => handleNav(item.id)}
+                title={!isSidebarExpanded ? item.label : undefined}
+                className={`w-full flex items-center rounded-lg transition-colors duration-150 whitespace-nowrap ${
+                  isSidebarExpanded ? 'space-x-3 px-3.5 py-2.5 justify-start' : 'px-0 py-2.5 justify-center'
+                } ${
+                  isActive
+                    ? 'bg-emerald-600 text-white font-bold shadow-md shadow-emerald-600/20'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <item.icon className={`h-5 w-5 shrink-0 ${isActive ? 'text-amber-300' : ''}`} />
+                {isSidebarExpanded && <span className="truncate text-sm">{item.label}</span>}
+              </button>
+            );
+          })}
         </nav>
 
-        {/* Mobile Group Filter & Sync status card in sidebar */}
-        <div className="p-4 border-t border-slate-800 space-y-2">
+        {/* Mobile Group Filter & Bottom Controls */}
+        <div className={`border-t border-slate-800 space-y-2 ${isSidebarExpanded ? 'p-3' : 'p-2'}`}>
           {/* Mobile Group Filter */}
-          {!isConductor && state.workGroups.length > 0 && (
-            <div className="md:hidden flex flex-col space-y-1 mb-4 bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
+          {!isConductor && state.workGroups.length > 0 && isSidebarExpanded && (
+            <div className="md:hidden flex flex-col space-y-1 mb-3 bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                 Grupo Operativo Actual
               </label>
@@ -176,48 +269,64 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
           )}
 
           {!isConductor && (
-            <button
-              onClick={() => setShowSyncModal(true)}
-              className="w-full bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 rounded-xl p-3 text-left transition-all group"
-            >
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center space-x-2">
-                  <div className={`h-2.5 w-2.5 rounded-full ${syncStatus.isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
-                  <span className="text-xs font-semibold text-slate-200">
-                    {syncStatus.isOnline ? `Nube Activa (${syncStatus.latencyInterval}s)` : 'Modo Local'}
-                  </span>
+            isSidebarExpanded ? (
+              <button
+                onClick={() => setShowSyncModal(true)}
+                className="w-full bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 rounded-xl p-2.5 text-left transition-all group"
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center space-x-2">
+                    <div className={`h-2.5 w-2.5 rounded-full ${syncStatus.isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+                    <span className="text-xs font-semibold text-slate-200">
+                      {syncStatus.isOnline ? `Nube Activa (${syncStatus.latencyInterval}s)` : 'Modo Local'}
+                    </span>
+                  </div>
+                  <Radio className="h-3.5 w-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
                 </div>
-                <Radio className="h-3.5 w-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
-              </div>
-              <div className="text-[11px] text-slate-400 font-mono truncate">
-                {syncStatus.deviceId} • v{syncStatus.serverVersion}
-              </div>
-            </button>
+                <div className="text-[11px] text-slate-400 font-mono truncate">
+                  {syncStatus.deviceId} • v{syncStatus.serverVersion}
+                </div>
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowSyncModal(true)}
+                title={syncStatus.isOnline ? `Nube Activa (${syncStatus.latencyInterval}s)` : 'Modo Local'}
+                className="w-full flex items-center justify-center py-2.5 rounded-lg bg-slate-800/70 text-emerald-400 hover:bg-slate-800 transition-colors"
+              >
+                <Radio className={`h-4 w-4 ${syncStatus.isOnline ? 'text-emerald-400' : 'text-red-400'}`} />
+              </button>
+            )
           )}
 
           {canAccessSystemConfig && (
             <button
               onClick={() => setShowSettings(true)}
-              className="w-full flex items-center space-x-3 px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title={!isSidebarExpanded ? 'Configuración' : undefined}
+              className={`w-full flex items-center rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-800 transition-colors whitespace-nowrap ${
+                isSidebarExpanded ? 'space-x-3 px-3.5 py-2 justify-start' : 'py-2.5 justify-center'
+              }`}
             >
-              <Settings className="h-4 w-4" />
-              <span>Configuración</span>
+              <Settings className="h-4 w-4 shrink-0" />
+              {isSidebarExpanded && <span>Configuración</span>}
             </button>
           )}
 
           <button
             onClick={handleLogout}
-            className="w-full flex items-center space-x-3 px-4 py-2 mt-1 rounded-lg text-sm text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors"
+            title={!isSidebarExpanded ? 'Cerrar Sesión' : undefined}
+            className={`w-full flex items-center rounded-lg text-sm text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors whitespace-nowrap ${
+              isSidebarExpanded ? 'space-x-3 px-3.5 py-2 justify-start' : 'py-2.5 justify-center'
+            }`}
           >
-            <LogOut className="h-4 w-4" />
-            <span>Cerrar Sesión</span>
+            <LogOut className="h-4 w-4 shrink-0" />
+            {isSidebarExpanded && <span>Cerrar Sesión</span>}
           </button>
         </div>
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shrink-0">
+      <main className={`flex-1 flex flex-col overflow-hidden transition-[padding] duration-200 ${isSidebarPinned ? '' : 'md:pl-16'}`}>
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-6 shrink-0">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsMobileMenuOpen(true)}
@@ -291,7 +400,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onViewCha
             )}
           </div>
         </header>
-        <div className="flex-1 overflow-y-auto overscroll-y-contain touch-pan-y p-4 md:p-8">{children}</div>
+        <div className="flex-1 overflow-y-auto overscroll-y-contain touch-pan-y p-3 sm:p-4 md:p-6">{children}</div>
       </main>
 
       {/* Sync Status & Protocol Modal */}

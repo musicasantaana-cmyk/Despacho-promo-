@@ -1,4 +1,4 @@
-import { AppUser, AuthSessionUser, DriverShift, UserRole } from '../types';
+import { AppUser, AuthSessionUser, BreakdownAuditLog, DriverShift, UserRole } from '../types';
 
 const TOKEN_STORAGE_KEY = 'PROMO_AUTH_TOKEN';
 
@@ -119,6 +119,9 @@ export async function startDriverShiftApi(payload: {
   driverName: string;
   vehicleNumber: string;
   vehicleId?: string;
+  routeId?: string;
+  routeCode?: string;
+  routeName?: string;
 }): Promise<{ shift: DriverShift }> {
   return apiFetch('/api/driver-shifts/start', {
     method: 'POST',
@@ -144,9 +147,33 @@ export async function endRouteApi(shiftId: string): Promise<{ shift: DriverShift
   });
 }
 
-export async function arriveBaseApi(shiftId: string): Promise<{ shift: DriverShift }> {
+export async function arriveBaseApi(
+  shiftId: string,
+  payload?: { weightTons?: number; requireWeight?: boolean }
+): Promise<{ shift: DriverShift; parentShift?: DriverShift | null }> {
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/arrive-base`, {
     method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function startSupportShiftApi(
+  parentShiftId: string,
+  payload: { routeId?: string; routeCode?: string; routeName?: string }
+): Promise<{ supportShift: DriverShift; parentShift: DriverShift }> {
+  return apiFetch(`/api/driver-shifts/${encodeURIComponent(parentShiftId)}/support/start`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function finalizePendingShiftApi(
+  shiftId: string,
+  payload?: { weightTons?: number; requireWeight?: boolean }
+): Promise<{ shift: DriverShift }> {
+  return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/finalize-pending`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
   });
 }
 
@@ -162,15 +189,79 @@ export async function endRefillApi(shiftId: string): Promise<{ shift: DriverShif
   });
 }
 
-export async function startBreakdownApi(shiftId: string, notes?: string): Promise<{ shift: DriverShift }> {
+export async function startBreakdownApi(
+  shiftId: string,
+  notes?: string,
+  reportedByName?: string
+): Promise<{ shift: DriverShift }> {
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/breakdown/start`, {
     method: 'POST',
-    body: JSON.stringify({ notes }),
+    body: JSON.stringify({ notes, reportedByName }),
   });
 }
 
-export async function endBreakdownApi(shiftId: string): Promise<{ shift: DriverShift }> {
+export async function endBreakdownApi(
+  shiftId: string,
+  payload?: {
+    breakdownId?: string;
+    resolvedReportedBy?: string;
+    resolutionNotes?: string;
+    requireReporter?: boolean;
+  }
+): Promise<{ shift: DriverShift }> {
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/breakdown/end`, {
     method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function acknowledgeBreakdownApi(
+  shiftId: string,
+  breakdownId: string,
+  acknowledgementNotes?: string
+): Promise<{ shift: DriverShift; auditLog: BreakdownAuditLog }> {
+  return apiFetch(
+    `/api/driver-shifts/${encodeURIComponent(shiftId)}/breakdown/${encodeURIComponent(breakdownId)}/acknowledge`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ acknowledgementNotes }),
+    }
+  );
+}
+
+export async function fetchBreakdownAuditLogsApi(workGroupId?: string): Promise<{ logs: BreakdownAuditLog[] }> {
+  const qs = workGroupId ? `?workGroupId=${encodeURIComponent(workGroupId)}` : '';
+  return apiFetch(`/api/breakdown-audit-logs${qs}`);
+}
+
+export async function updateShiftTimesApi(
+  shiftId: string,
+  payload: {
+    t1StartShiftAt?: string;
+    t2StartRouteAt?: string | null;
+    t3EndRouteAt?: string | null;
+    t4ArriveBaseAt?: string | null;
+    weightTons?: number | null;
+  }
+): Promise<{ shift: DriverShift }> {
+  return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/times`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function addManualShiftEventApi(
+  shiftId: string,
+  payload: {
+    type: 'breakdown' | 'refill';
+    startAt: string;
+    endAt?: string | null;
+    notes?: string;
+    reportedByName?: string;
+  }
+): Promise<{ shift: DriverShift; auditLog?: BreakdownAuditLog }> {
+  return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/manual-event`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }

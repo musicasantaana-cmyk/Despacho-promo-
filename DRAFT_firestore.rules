@@ -99,13 +99,16 @@ service cloud.firestore {
       return data.keys().hasAll(['date', 'workGroupId', 'driverId', 'driverName', 'vehicleNumber', 'createdByUserId', 'status', 't1StartShiftAt', 'isPausedForRefill', 'refillEvents', 'isInBreakdown', 'breakdownEvents', 'refillTotalMins', 'mechanicalBreakdownTotalMins', 'createdAt', 'updatedAt']) &&
              data.keys().hasOnly([
                'date', 'workGroupId', 'workGroupName', 'driverId', 'driverName', 'vehicleNumber', 'vehicleId',
+               'routeId', 'routeCode', 'routeName',
                'createdByUserId', 'createdByUsername', 'status', 'checklistConfirmed', 'checklistConfirmedAt',
                't1StartShiftAt', 't2StartRouteAt', 't3EndRouteAt', 't4ArriveBaseAt',
                'isPausedForRefill', 'activeRefillId', 'pausedPhase', 'refillEvents',
                'isInBreakdown', 'activeBreakdownId', 'breakdownEvents',
+               'isSupportShift', 'parentShiftId', 'parentRouteCode', 'parentRouteName',
+               'isPausedForSupport', 'activeSupportShiftId', 'supportEvents', 'supportTotalMins',
                'initialTransitMins', 'routeExecutionMins', 'routeExecutionNetMins',
-               'returnTransitMins', 'totalOperationMins', 'totalOperationNetMins',
-               'refillTotalMins', 'mechanicalBreakdownTotalMins', 'createdAt', 'updatedAt'
+               'returnTransitMins', 'totalTransitMins', 'totalOperationMins', 'totalOperationNetMins',
+               'refillTotalMins', 'mechanicalBreakdownTotalMins', 'weightTons', 'createdAt', 'updatedAt'
              ]) &&
              data.date is string && data.date.size() <= 20 &&
              data.workGroupId is string && data.workGroupId.size() >= 1 && data.workGroupId.size() <= 128 &&
@@ -114,6 +117,9 @@ service cloud.firestore {
              data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 120 &&
              data.vehicleNumber is string && data.vehicleNumber.size() >= 1 && data.vehicleNumber.size() <= 50 &&
              data.get('vehicleId', '') is string && data.get('vehicleId', '').size() <= 128 &&
+             data.get('routeId', '') is string && data.get('routeId', '').size() <= 128 &&
+             data.get('routeCode', '') is string && data.get('routeCode', '').size() <= 50 &&
+             data.get('routeName', '') is string && data.get('routeName', '').size() <= 100 &&
              data.createdByUserId is string && data.createdByUserId.size() >= 1 && data.createdByUserId.size() <= 128 &&
              data.get('createdByUsername', '') is string && data.get('createdByUsername', '').size() <= 100 &&
              data.status in ['EN_TURNO', 'EN_RUTA', 'FIN_RUTA', 'EN_BASE'] &&
@@ -123,8 +129,47 @@ service cloud.firestore {
              data.refillEvents is list && data.refillEvents.size() <= 50 &&
              data.isInBreakdown is bool &&
              data.breakdownEvents is list && data.breakdownEvents.size() <= 50 &&
+             data.get('isSupportShift', false) is bool &&
+             data.get('isPausedForSupport', false) is bool &&
+             data.get('supportEvents', []) is list && data.get('supportEvents', []).size() <= 50 &&
+             data.get('supportTotalMins', 0) is number && data.get('supportTotalMins', 0) >= 0 &&
              data.refillTotalMins is number && data.refillTotalMins >= 0 &&
              data.mechanicalBreakdownTotalMins is number && data.mechanicalBreakdownTotalMins >= 0 &&
+             (data.get('weightTons', null) == null || (data.weightTons is number && data.weightTons >= 0)) &&
+             data.createdAt is string && data.createdAt.size() <= 50 &&
+             data.updatedAt is string && data.updatedAt.size() <= 50;
+    }
+
+    function isValidBreakdownAuditLog(data) {
+      return data.keys().hasAll(['shiftId', 'breakdownId', 'date', 'workGroupId', 'vehicleNumber', 'driverName', 'incidentType', 'reportedAt', 'status', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly([
+               'shiftId', 'breakdownId', 'date', 'workGroupId', 'workGroupName',
+               'vehicleNumber', 'routeCode', 'routeName', 'driverId', 'driverName',
+               'incidentType', 'notes', 'reportedAt', 'reportedByUserId', 'reportedByUsername', 'reportedByName',
+               'status', 'acknowledgedAt', 'acknowledgedByUserId', 'acknowledgedByUsername',
+               'acknowledgedByFullName', 'acknowledgedByRole', 'acknowledgementNotes',
+               'resolvedAt', 'resolvedByUserId', 'resolvedByUsername', 'resolvedReportedBy', 'resolutionNotes', 'durationMins',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.shiftId is string && data.shiftId.size() >= 1 && data.shiftId.size() <= 128 &&
+             data.breakdownId is string && data.breakdownId.size() >= 1 && data.breakdownId.size() <= 128 &&
+             data.date is string && data.date.size() <= 20 &&
+             data.workGroupId is string && data.workGroupId.size() >= 1 && data.workGroupId.size() <= 128 &&
+             data.get('workGroupName', '') is string && data.get('workGroupName', '').size() <= 100 &&
+             data.vehicleNumber is string && data.vehicleNumber.size() >= 1 && data.vehicleNumber.size() <= 50 &&
+             data.get('routeCode', '') is string && data.get('routeCode', '').size() <= 50 &&
+             data.get('routeName', '') is string && data.get('routeName', '').size() <= 100 &&
+             data.get('driverId', '') is string && data.get('driverId', '').size() <= 128 &&
+             data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 120 &&
+             data.incidentType is string && data.incidentType.size() >= 1 && data.incidentType.size() <= 50 &&
+             data.get('notes', '') is string && data.get('notes', '').size() <= 300 &&
+             data.reportedAt is string && data.reportedAt.size() <= 50 &&
+             (data.get('reportedByName', null) == null || (data.reportedByName is string && data.reportedByName.size() <= 120)) &&
+             data.status in ['PENDIENTE', 'ACEPTADA'] &&
+             (data.get('resolvedAt', null) == null || (data.resolvedAt is string && data.resolvedAt.size() <= 50)) &&
+             (data.get('resolvedReportedBy', null) == null || (data.resolvedReportedBy is string && data.resolvedReportedBy.size() <= 150)) &&
+             (data.get('resolutionNotes', null) == null || (data.resolutionNotes is string && data.resolutionNotes.size() <= 300)) &&
+             (data.get('durationMins', null) == null || (data.durationMins is number && data.durationMins >= 0)) &&
              data.createdAt is string && data.createdAt.size() <= 50 &&
              data.updatedAt is string && data.updatedAt.size() <= 50;
     }
@@ -182,12 +227,24 @@ service cloud.firestore {
       allow create: if isValidId(id) && isValidDriverShift(incoming());
       allow update: if isValidId(id) && isValidDriverShift(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly([
         'status', 'checklistConfirmed', 'checklistConfirmedAt',
-        't2StartRouteAt', 't3EndRouteAt', 't4ArriveBaseAt',
+        't1StartShiftAt', 't2StartRouteAt', 't3EndRouteAt', 't4ArriveBaseAt',
         'isPausedForRefill', 'activeRefillId', 'pausedPhase', 'refillEvents',
         'isInBreakdown', 'activeBreakdownId', 'breakdownEvents',
+        'isPausedForSupport', 'activeSupportShiftId', 'supportEvents', 'supportTotalMins',
         'initialTransitMins', 'routeExecutionMins', 'routeExecutionNetMins',
-        'returnTransitMins', 'totalOperationMins', 'totalOperationNetMins',
-        'refillTotalMins', 'mechanicalBreakdownTotalMins', 'updatedAt'
+        'returnTransitMins', 'totalTransitMins', 'totalOperationMins', 'totalOperationNetMins',
+        'refillTotalMins', 'mechanicalBreakdownTotalMins', 'weightTons', 'updatedAt'
+      ]);
+      allow delete: if isValidId(id);
+    }
+    match /breakdown_audit_logs/{id} {
+      allow read: if true;
+      allow create: if isValidId(id) && isValidBreakdownAuditLog(incoming());
+      allow update: if isValidId(id) && isValidBreakdownAuditLog(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly([
+        'status', 'acknowledgedAt', 'acknowledgedByUserId', 'acknowledgedByUsername',
+        'acknowledgedByFullName', 'acknowledgedByRole', 'acknowledgementNotes',
+        'resolvedAt', 'resolvedByUserId', 'resolvedByUsername', 'resolvedReportedBy', 'resolutionNotes', 'durationMins',
+        'updatedAt'
       ]);
       allow delete: if isValidId(id);
     }
