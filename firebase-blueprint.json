@@ -48,7 +48,11 @@
         "origin": { "type": "string", "maxLength": 100 },
         "destination": { "type": "string", "maxLength": 100 },
         "estimatedHours": { "type": "number" },
-        "workGroupId": { "type": "string", "maxLength": 128 }
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "routeMapPdfDataUrl": { "type": "string", "maxLength": 420000 },
+        "routeMapPdfName": { "type": "string", "maxLength": 150 },
+        "dischargeSheetPdfDataUrl": { "type": "string", "maxLength": 420000 },
+        "dischargeSheetPdfName": { "type": "string", "maxLength": 150 }
       },
       "required": ["name", "code", "origin", "destination", "estimatedHours"]
     },
@@ -116,6 +120,8 @@
         "status": { "type": "string", "enum": ["EN_TURNO", "EN_RUTA", "FIN_RUTA", "EN_BASE"] },
         "checklistConfirmed": { "type": "boolean" },
         "checklistConfirmedAt": { "type": "string", "maxLength": 50 },
+        "odometer": { "type": "number" },
+        "serviceTime": { "type": "string", "maxLength": 50 },
         "t1StartShiftAt": { "type": "string", "maxLength": 50 },
         "t2StartRouteAt": { "type": "string", "maxLength": 50 },
         "t3EndRouteAt": { "type": "string", "maxLength": 50 },

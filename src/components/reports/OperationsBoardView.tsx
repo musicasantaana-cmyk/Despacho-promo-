@@ -73,6 +73,7 @@ interface BoardCardItem {
   shift?: DriverShift;
   assignment?: Assignment;
   assignmentTime?: string;
+  isPendingAssignment?: boolean;
 }
 
 function higherAlertLevel(a: RouteAlertLevel, b: RouteAlertLevel): RouteAlertLevel {
@@ -177,7 +178,7 @@ function playAlertBeep() {
 }
 
 export const OperationsBoardView: React.FC = () => {
-  const { state, updateAssignmentResources, addIncident } = useAppContext();
+  const { state, syncNow, updateAssignmentResources, addIncident } = useAppContext();
   const { user, lockedWorkGroupId } = useAuth();
   const canEditBoard = Boolean(user && ['admin', 'gestion', 'supervisor'].includes(user.role));
 
@@ -277,6 +278,7 @@ export const OperationsBoardView: React.FC = () => {
   const boardCards = useMemo<BoardCardItem[]>(() => {
     const items: BoardCardItem[] = [];
     const seenGroupVehicleKeys = new Set<string>();
+    const seenVehicleIds = new Set<string>();
 
     const shiftsForDate = state.driverShifts.filter(s => {
       if (s.date !== selectedDate) return false;
@@ -296,6 +298,7 @@ export const OperationsBoardView: React.FC = () => {
       const breakdown = computeShiftTimeBreakdown(shift, nowMs);
 
       seenGroupVehicleKeys.add(`${shift.workGroupId}::${shift.vehicleNumber.trim().toLowerCase()}`);
+      if (shift.vehicleId) seenVehicleIds.add(`${shift.workGroupId}::${shift.vehicleId}`);
 
       items.push({
         key: `shift_${shift.id}`,
@@ -321,11 +324,11 @@ export const OperationsBoardView: React.FC = () => {
       });
     });
 
-    // 2. Active dispatch assignments for selectedDate when no primary DriverShift exists yet
+    // 2. Dispatch assignments for selectedDate (including Pendiente) when no primary DriverShift exists yet
     state.assignments.forEach(a => {
       if (a.date.slice(0, 10) !== selectedDate) return;
       if (lockedWorkGroupId && a.workGroupId !== lockedWorkGroupId) return;
-      if (a.status === 'Pendiente' || a.status === 'Cancelado') return;
+      if (a.status === 'Cancelado') return;
 
       let mappedStatus: DriverShiftStatus = 'EN_TURNO';
       if (a.status === 'Inicio de Ruta' || a.status === 'Relleno') mappedStatus = 'EN_RUTA';
@@ -336,7 +339,7 @@ export const OperationsBoardView: React.FC = () => {
       const vehicleNumber = vehicle?.internalNumber || vehicle?.plate || 'N/A';
       const groupId = a.workGroupId || vehicle?.workGroupId || '';
       const dedupKey = `${groupId}::${vehicleNumber.trim().toLowerCase()}`;
-      if (seenGroupVehicleKeys.has(dedupKey)) return;
+      if (seenGroupVehicleKeys.has(dedupKey) || (a.vehicleId && seenVehicleIds.has(`${groupId}::${a.vehicleId}`))) return;
 
       const group = state.workGroups.find(wg => wg.id === groupId);
       const route = state.routes.find(r => r.id === a.routeId);
@@ -373,6 +376,7 @@ export const OperationsBoardView: React.FC = () => {
         supportingVehicles: [],
         assignment: a,
         assignmentTime: a.inicioRutaAt || a.salidaBaseAt || a.createdAt || a.date,
+        isPendingAssignment: a.status === 'Pendiente',
       });
     });
 
@@ -557,6 +561,7 @@ export const OperationsBoardView: React.FC = () => {
     try {
       await acknowledgeBreakdownApi(activeAlarm.shift.id, activeAlarm.breakdown.id, ackNotes.trim());
       setAckNotes('');
+      await syncNow();
     } catch (err: any) {
       setAckError(err?.message || 'No se pudo aceptar la novedad. Intente de nuevo.');
     } finally {
@@ -718,6 +723,7 @@ export const OperationsBoardView: React.FC = () => {
         });
         setEditSuccessMsg('Tiempos actualizados y métricas recalculadas correctamente.');
         setBoardModalTab('none');
+        await syncNow();
       } else if (liveSelectedCard.assignment) {
         const statusTimestamps: Record<string, string> = {};
         if (p1.iso) statusTimestamps['Salida de Base'] = p1.iso;
@@ -817,6 +823,7 @@ export const OperationsBoardView: React.FC = () => {
             : 'Reporte de relleno/descargue registrado correctamente.'
         );
         setBoardModalTab('none');
+        await syncNow();
       } else if (liveSelectedCard.assignment) {
         if (!endIso) {
           setManualError('Para despachos sin jornada de conductor, indique hora de fin.');
@@ -880,6 +887,7 @@ export const OperationsBoardView: React.FC = () => {
       });
       setResolveReporterName('');
       setResolveNotes('');
+      await syncNow();
     } catch (err: any) {
       setResolveError(err?.message || 'No se pudo finalizar el reporte de avería.');
     } finally {
@@ -1450,7 +1458,9 @@ export const OperationsBoardView: React.FC = () => {
                                         ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · Pausa`
                                         : card.supportingVehicles.length > 0
                                           ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · +${card.supportingVehicles.map(v => `M.${v.vehicleNumber}`).join(',')}`
-                                          : `${card.isSupportShift ? 'Apoyo ' : ''}${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · ${card.groupName}`}
+                                          : card.isPendingAssignment
+                                            ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · Asignada`
+                                            : `${card.isSupportShift ? 'Apoyo ' : ''}${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · ${card.groupName}`}
                                     </div>
                                   </button>
                                 );
@@ -1570,7 +1580,9 @@ export const OperationsBoardView: React.FC = () => {
               <div className="flex justify-between">
                 <span className="text-slate-500">Estado Actual:</span>
                 <span className="font-bold text-slate-900">
-                  {PHASE_LANES.find(p => p.status === liveSelectedCard.status)?.label}
+                  {liveSelectedCard.isPendingAssignment
+                    ? 'Asignada (Pendiente inicio de turno)'
+                    : PHASE_LANES.find(p => p.status === liveSelectedCard.status)?.label}
                   {liveSelectedCard.isSupportShift ? ' (Apoyo)' : ''}
                   {liveSelectedCard.isPausedForSupport ? ' (Pausada por Apoyo)' : ''}
                 </span>

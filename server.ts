@@ -15,6 +15,8 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  writeBatch,
+  onSnapshot,
   query,
   where,
 } from 'firebase/firestore';
@@ -81,6 +83,8 @@ interface DriverShiftDoc {
   status: DriverShiftStatus;
   checklistConfirmed: boolean;
   checklistConfirmedAt: string | null;
+  odometer?: number | null;
+  serviceTime?: string | null;
   t1StartShiftAt: string;
   t2StartRouteAt: string | null;
   t3EndRouteAt: string | null;
@@ -263,6 +267,9 @@ function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authHeader.slice(7).trim();
+  }
+  if (req.path === '/api/sync/stream' && typeof req.query?.token === 'string' && req.query.token.trim()) {
+    return req.query.token.trim();
   }
   const cookies = parseCookies(req.headers.cookie);
   return cookies[COOKIE_NAME] || null;
@@ -549,10 +556,462 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
+  // ── Real-Time Sync Hub (SSE + Firestore Listeners) ─────────────────────────
+  const syncClients = new Set<{ res: Response; user: SessionUser }>();
+  let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const broadcastSyncNow = (reason: string) => {
+    const payload = `data: ${JSON.stringify({ type: 'sync', reason, ts: Date.now() })}\n\n`;
+    syncClients.forEach(client => {
+      try {
+        client.res.write(payload);
+      } catch {
+        syncClients.delete(client);
+      }
+    });
+  };
+
+  const emitSyncUpdate = (reason: string) => {
+    broadcastSyncNow(reason);
+  };
+
+  const scheduleSyncBroadcast = (reason: string) => {
+    if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(() => {
+      syncDebounceTimer = null;
+      broadcastSyncNow(reason);
+    }, 120);
+  };
+
+  const SYNC_WATCHED_COLLECTIONS = [
+    'workGroups',
+    'employees',
+    'vehicles',
+    'routes',
+    'assignments',
+    'crews',
+    'attendances',
+    'driver_shifts',
+    'breakdown_audit_logs',
+  ] as const;
+
+  SYNC_WATCHED_COLLECTIONS.forEach(colName => {
+    let isInitialSnapshot = true;
+    onSnapshot(
+      collection(db, colName),
+      () => {
+        if (isInitialSnapshot) {
+          isInitialSnapshot = false;
+          return;
+        }
+        scheduleSyncBroadcast(`firestore:${colName}`);
+      },
+      err => {
+        console.warn(`Sync watcher error on ${colName}:`, err?.message || err);
+      }
+    );
+  });
+
   // ── Health Check ────────────────────────────────────────────────────────────
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true, timestamp: new Date().toISOString() });
   });
+
+  // ── SSE Stream for Instant Cross-Module Sync ────────────────────────────────
+  app.get('/api/sync/stream', authenticate, (req: AuthenticatedRequest, res: Response) => {
+    const user = req.user!;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const client = { res, user };
+    syncClients.add(client);
+    res.write(`data: ${JSON.stringify({ type: 'connected', ts: Date.now() })}\n\n`);
+
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch {
+        clearInterval(keepAlive);
+        syncClients.delete(client);
+      }
+    }, 25000);
+
+    req.on('close', () => {
+      clearInterval(keepAlive);
+      syncClients.delete(client);
+    });
+  });
+
+  // ── Unified State Snapshot (RBAC + Group Isolated) ──────────────────────────
+  app.get('/api/sync/state', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const [
+        wgSnap,
+        empSnap,
+        vehSnap,
+        routeSnap,
+        assignSnap,
+        crewSnap,
+        attSnap,
+        shiftSnap,
+        auditSnap,
+      ] = await Promise.all([
+        getDocs(collection(db, 'workGroups')),
+        getDocs(collection(db, 'employees')),
+        getDocs(collection(db, 'vehicles')),
+        getDocs(collection(db, 'routes')),
+        getDocs(collection(db, 'assignments')),
+        getDocs(collection(db, 'crews')),
+        getDocs(collection(db, 'attendances')),
+        getDocs(collection(db, 'driver_shifts')),
+        getDocs(collection(db, 'breakdown_audit_logs')),
+      ]);
+
+      let workGroups: Array<Record<string, any>> = wgSnap.docs.map(d => ({ ...(d.data() as Record<string, any>), id: d.id }));
+      let employees: Array<Record<string, any>> = empSnap.docs.map(d => ({ ...(d.data() as Record<string, any>), id: d.id }));
+      let vehicles: Array<Record<string, any>> = vehSnap.docs.map(d => ({ ...(d.data() as Record<string, any>), id: d.id }));
+      let routes: Array<Record<string, any>> = routeSnap.docs.map(d => ({ ...(d.data() as Record<string, any>), id: d.id }));
+      let assignments: Array<Record<string, any>> = assignSnap.docs.map(d => {
+        const data = d.data() as Record<string, any>;
+        let finalData: Record<string, any> = { ...data, id: d.id };
+        const metaIncident = Array.isArray(finalData.incidents)
+          ? finalData.incidents.find((i: any) => i && i.id === 'SYS_META')
+          : null;
+        if (metaIncident) {
+          try {
+            const meta = JSON.parse(metaIncident.description);
+            finalData = {
+              ...finalData,
+              ...meta,
+              incidents: finalData.incidents.filter((i: any) => i && i.id !== 'SYS_META'),
+            };
+          } catch {
+            // ignore malformed meta
+          }
+        }
+        return finalData;
+      });
+      let crews: Array<Record<string, any>> = crewSnap.docs.map(d => ({ ...(d.data() as Record<string, any>), id: d.id }));
+      let attendances: Array<Record<string, any>> = attSnap.docs.map(d => ({ ...(d.data() as Record<string, any>), id: d.id }));
+      let driverShifts = shiftSnap.docs
+        .map(d => ({ ...(d.data() as DriverShiftDoc), id: d.id }))
+        .sort((a, b) => (b.t1StartShiftAt || '').localeCompare(a.t1StartShiftAt || ''));
+      let breakdownAuditLogs = auditSnap.docs
+        .map(d => ({ ...(d.data() as BreakdownAuditLogDoc), id: d.id }))
+        .sort((a, b) => (b.reportedAt || '').localeCompare(a.reportedAt || ''));
+
+      const scopedGroupId =
+        user.role === 'supervisor'
+          ? user.workGroupId || ''
+          : user.role === 'conductor' && user.workGroupId && user.workGroupId !== 'ALL'
+            ? user.workGroupId
+            : '';
+
+      if (scopedGroupId) {
+        const lockedGroup = workGroups.find(wg => wg.id === scopedGroupId);
+        const lockedGroupName = String(lockedGroup?.name || '').trim().toLowerCase();
+        const matchesEmpGroup = (e: Record<string, any>) => {
+          if (e.workGroupId === scopedGroupId) return true;
+          if (!e.workGroupId && e.workGroup && lockedGroupName && String(e.workGroup).trim().toLowerCase() === lockedGroupName) {
+            return true;
+          }
+          return false;
+        };
+
+        workGroups = workGroups.filter(wg => wg.id === scopedGroupId);
+        employees = employees.filter(matchesEmpGroup);
+        vehicles = vehicles.filter(v => v.workGroupId === scopedGroupId);
+        routes = routes.filter(r => r.workGroupId === scopedGroupId);
+        assignments = assignments.filter(a => a.workGroupId === scopedGroupId);
+        crews = crews.filter(c => c.workGroupId === scopedGroupId);
+        attendances = attendances.filter(att => att.workGroupId === scopedGroupId);
+        driverShifts = driverShifts.filter(s => s.workGroupId === scopedGroupId);
+        breakdownAuditLogs = breakdownAuditLogs.filter(l => l.workGroupId === scopedGroupId);
+      }
+
+      if (user.role === 'conductor') {
+        driverShifts = driverShifts.filter(
+          s => s.createdByUserId === user.id || (user.employeeId && s.driverId === user.employeeId)
+        );
+        breakdownAuditLogs = [];
+      }
+
+      res.json({
+        workGroups,
+        employees,
+        vehicles,
+        routes,
+        assignments,
+        crews,
+        attendances,
+        driverShifts,
+        breakdownAuditLogs,
+        serverTs: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('GET /api/sync/state error:', err);
+      res.status(500).json({ error: 'Error al sincronizar el estado operativo.' });
+    }
+  });
+
+  // ── Synchronized Collection CRUD Endpoints ──────────────────────────────────
+  const SYNC_MUTABLE_COLLECTIONS = new Set([
+    'workGroups',
+    'employees',
+    'vehicles',
+    'routes',
+    'assignments',
+    'crews',
+    'attendances',
+  ]);
+
+  app.post(
+    '/api/sync/employees/bulk',
+    authenticate,
+    requireRole(['admin', 'gestion', 'supervisor']),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const user = req.user!;
+        const rawRows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+        const requestedActiveGroupId = String(req.body?.activeWorkGroupId || '').trim();
+        if (rawRows.length === 0) {
+          res.status(400).json({ error: 'No se recibieron filas de trabajadores para importar.' });
+          return;
+        }
+
+        const wgSnap = await getDocs(collection(db, 'workGroups'));
+        const currentWorkGroups = wgSnap.docs.map(d => ({
+          id: d.id,
+          name: String(d.data()?.name || ''),
+        }));
+
+        const normalizeRole = (val: unknown): 'Conductor' | 'Ayudante' | 'Coordinador' => {
+          const str = String(val || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim();
+          if (str.includes('conduct') || str.includes('chofer') || str.includes('driver')) return 'Conductor';
+          if (str.includes('ayud') || str.includes('auxil') || str.includes('peon') || str.includes('asist')) return 'Ayudante';
+          if (str.includes('coord') || str.includes('superv') || str.includes('lider') || str.includes('jefe') || str.includes('admin')) {
+            return 'Coordinador';
+          }
+          return 'Conductor';
+        };
+
+        const batch = writeBatch(db);
+        const lockedGroup = user.role === 'supervisor' ? user.workGroupId || '' : '';
+
+        for (const row of rawRows) {
+          const lastName = String(row?.apellido || row?.apellidos || row?.lastname || row?.last_name || '').trim();
+          const firstName = String(row?.nombre || row?.nombres || row?.firstname || row?.first_name || row?.name || '').trim();
+          const rawRole = row?.roll || row?.rol || row?.cargo || row?.puesto || row?.funcion || row?.role || '';
+          const role = normalizeRole(rawRole);
+          const phone = String(row?.telefono || row?.telefonos || row?.celular || row?.tel || row?.phone || row?.movil || '').trim();
+          const rawGroup = String(row?.grupo || row?.grupos || row?.group || row?.area || row?.zona || '').trim();
+
+          let assignedGroupId = lockedGroup || requestedActiveGroupId || '';
+
+          if (!lockedGroup && rawGroup) {
+            let foundGroup = currentWorkGroups.find(
+              g => g.name.trim().toLowerCase() === rawGroup.toLowerCase()
+            );
+            if (!foundGroup) {
+              const wgRef = doc(collection(db, 'workGroups'));
+              foundGroup = { id: wgRef.id, name: rawGroup };
+              currentWorkGroups.push(foundGroup);
+              batch.set(wgRef, { name: rawGroup });
+            }
+            assignedGroupId = foundGroup.id;
+          }
+
+          const fullName = `${firstName} ${lastName}`.trim() || firstName || lastName || 'Sin Nombre';
+          const empRef = doc(collection(db, 'employees'));
+          batch.set(empRef, {
+            name: fullName,
+            firstName,
+            lastName,
+            role,
+            phone,
+            workGroup: rawGroup,
+            workGroupId: assignedGroupId,
+          });
+        }
+
+        await batch.commit();
+        emitSyncUpdate('employees.bulk');
+        res.status(201).json({ ok: true, count: rawRows.length });
+      } catch (err) {
+        console.error('POST /api/sync/employees/bulk error:', err);
+        res.status(500).json({ error: 'Error al importar trabajadores masivamente.' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/sync/employees/all',
+    authenticate,
+    requireRole(['admin', 'gestion']),
+    async (_req: AuthenticatedRequest, res: Response) => {
+      try {
+        const snap = await getDocs(collection(db, 'employees'));
+        const batch = writeBatch(db);
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+        emitSyncUpdate('employees.deleteAll');
+        res.json({ ok: true, deleted: snap.size });
+      } catch (err) {
+        console.error('DELETE /api/sync/employees/all error:', err);
+        res.status(500).json({ error: 'Error al eliminar todos los trabajadores.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/sync/:col',
+    authenticate,
+    requireRole(['admin', 'gestion', 'supervisor']),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const user = req.user!;
+        const colName = String(req.params.col || '').trim();
+        if (!SYNC_MUTABLE_COLLECTIONS.has(colName)) {
+          res.status(400).json({ error: 'Colección no permitida.' });
+          return;
+        }
+        if (colName === 'workGroups' && !['admin', 'gestion'].includes(user.role)) {
+          res.status(403).json({ error: 'Solo Administración o Gestión puede crear grupos operativos.' });
+          return;
+        }
+
+        const rawPayload = req.body?.data && typeof req.body.data === 'object' ? { ...req.body.data } : null;
+        if (!rawPayload) {
+          res.status(400).json({ error: 'Datos inválidos.' });
+          return;
+        }
+        delete rawPayload.id;
+
+        if (colName !== 'workGroups') {
+          if (user.role === 'supervisor') {
+            if (!user.workGroupId) {
+              res.status(403).json({ error: 'Supervisor sin grupo asignado.' });
+              return;
+            }
+            rawPayload.workGroupId = user.workGroupId;
+          } else if (rawPayload.workGroupId && !canAccessGroup(user, String(rawPayload.workGroupId))) {
+            res.status(403).json({ error: 'Acceso denegado fuera de su grupo.' });
+            return;
+          }
+        }
+
+        const customId = typeof req.body?.id === 'string' && req.body.id.trim() ? req.body.id.trim() : '';
+        const targetRef = customId ? doc(db, colName, customId) : doc(collection(db, colName));
+        await setDoc(targetRef, rawPayload);
+        emitSyncUpdate(`${colName}.create`);
+        res.status(201).json({ id: targetRef.id, doc: { ...rawPayload, id: targetRef.id } });
+      } catch (err) {
+        console.error(`POST /api/sync/${req.params.col} error:`, err);
+        res.status(500).json({ error: 'Error al guardar registro.' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/sync/:col/:id',
+    authenticate,
+    requireRole(['admin', 'gestion', 'supervisor']),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const user = req.user!;
+        const colName = String(req.params.col || '').trim();
+        const docId = String(req.params.id || '').trim();
+        if (!SYNC_MUTABLE_COLLECTIONS.has(colName) || !docId) {
+          res.status(400).json({ error: 'Solicitud inválida.' });
+          return;
+        }
+        if (colName === 'workGroups' && !['admin', 'gestion'].includes(user.role)) {
+          res.status(403).json({ error: 'Solo Administración o Gestión puede modificar grupos operativos.' });
+          return;
+        }
+
+        const targetRef = doc(db, colName, docId);
+        const existingSnap = await getDoc(targetRef);
+        if (!existingSnap.exists()) {
+          res.status(404).json({ error: 'Registro no encontrado.' });
+          return;
+        }
+        const existing = existingSnap.data() as Record<string, any>;
+        if (colName !== 'workGroups' && !canAccessGroup(user, String(existing.workGroupId || ''))) {
+          res.status(403).json({ error: 'Acceso denegado fuera de su grupo.' });
+          return;
+        }
+
+        const rawUpdates = req.body?.data && typeof req.body.data === 'object' ? { ...req.body.data } : null;
+        if (!rawUpdates) {
+          res.status(400).json({ error: 'Datos de actualización inválidos.' });
+          return;
+        }
+        delete rawUpdates.id;
+
+        if (colName !== 'workGroups' && user.role === 'supervisor' && user.workGroupId) {
+          rawUpdates.workGroupId = user.workGroupId;
+        }
+
+        await updateDoc(targetRef, rawUpdates);
+        emitSyncUpdate(`${colName}.update`);
+        res.json({ id: docId, ok: true });
+      } catch (err) {
+        console.error(`PATCH /api/sync/${req.params.col}/${req.params.id} error:`, err);
+        res.status(500).json({ error: 'Error al actualizar registro.' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/sync/:col/:id',
+    authenticate,
+    requireRole(['admin', 'gestion', 'supervisor']),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const user = req.user!;
+        const colName = String(req.params.col || '').trim();
+        const docId = String(req.params.id || '').trim();
+        if (!SYNC_MUTABLE_COLLECTIONS.has(colName) || !docId) {
+          res.status(400).json({ error: 'Solicitud inválida.' });
+          return;
+        }
+        if (colName === 'workGroups' && !['admin', 'gestion'].includes(user.role)) {
+          res.status(403).json({ error: 'Solo Administración o Gestión puede eliminar grupos operativos.' });
+          return;
+        }
+
+        const targetRef = doc(db, colName, docId);
+        const existingSnap = await getDoc(targetRef);
+        if (!existingSnap.exists()) {
+          res.status(404).json({ error: 'Registro no encontrado.' });
+          return;
+        }
+        const existing = existingSnap.data() as Record<string, any>;
+        if (colName !== 'workGroups' && !canAccessGroup(user, String(existing.workGroupId || ''))) {
+          res.status(403).json({ error: 'Acceso denegado fuera de su grupo.' });
+          return;
+        }
+
+        await deleteDoc(targetRef);
+        emitSyncUpdate(`${colName}.delete`);
+        res.json({ ok: true });
+      } catch (err) {
+        console.error(`DELETE /api/sync/${req.params.col}/${req.params.id} error:`, err);
+        res.status(500).json({ error: 'Error al eliminar registro.' });
+      }
+    }
+  );
+
+  // ── Health Check Ready above ────────────────────────────────────────────────
 
   // ── Auth Routes ─────────────────────────────────────────────────────────────
   app.post('/api/auth/login', async (req: Request, res: Response) => {
@@ -915,6 +1374,8 @@ async function startServer() {
         status: 'EN_TURNO',
         checklistConfirmed: false,
         checklistConfirmedAt: null,
+        odometer: null,
+        serviceTime: null,
         t1StartShiftAt: now,
         t2StartRouteAt: null,
         t3EndRouteAt: null,
@@ -949,6 +1410,7 @@ async function startServer() {
       };
 
       await setDoc(doc(db, 'driver_shifts', docId), shiftDoc);
+      emitSyncUpdate('driver_shifts.start');
       res.status(201).json({ shift: { ...shiftDoc, id: docId } });
     } catch (err) {
       console.error('POST /api/driver-shifts/start error:', err);
@@ -972,14 +1434,41 @@ async function startServer() {
         return;
       }
 
+      const rawOdometer = req.body?.odometer;
+      const parsedOdometer = Number(rawOdometer);
+      if (rawOdometer === undefined || rawOdometer === null || String(rawOdometer).trim() === '' || !Number.isFinite(parsedOdometer) || parsedOdometer < 0) {
+        res.status(400).json({ error: 'Debe ingresar un valor de Odómetro válido (mayor o igual a 0).' });
+        return;
+      }
+
+      const rawServiceTime = typeof req.body?.serviceTime === 'string' ? req.body.serviceTime.trim() : '';
+      if (!rawServiceTime || rawServiceTime.length > 50) {
+        res.status(400).json({ error: 'Debe ingresar el Tiempo de Servicio (máximo 50 caracteres).' });
+        return;
+      }
+
+      const cleanOdometer = Number(parsedOdometer.toFixed(2));
       const now = new Date().toISOString();
       await updateDoc(shiftRef, {
         checklistConfirmed: true,
         checklistConfirmedAt: now,
+        odometer: cleanOdometer,
+        serviceTime: rawServiceTime,
         updatedAt: now,
       });
+      emitSyncUpdate('driver_shifts.checklist');
 
-      res.json({ shift: { ...shift, id: snap.id, checklistConfirmed: true, checklistConfirmedAt: now, updatedAt: now } });
+      res.json({
+        shift: {
+          ...shift,
+          id: snap.id,
+          checklistConfirmed: true,
+          checklistConfirmedAt: now,
+          odometer: cleanOdometer,
+          serviceTime: rawServiceTime,
+          updatedAt: now,
+        },
+      });
     } catch (err) {
       console.error('checklist-ack error:', err);
       res.status(500).json({ error: 'Error al confirmar checklist preoperacional.' });
@@ -1031,6 +1520,7 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      emitSyncUpdate('driver_shifts.startRoute');
       res.json({ shift: { ...shift, ...updates, id: snap.id } });
     } catch (err) {
       console.error('start-route error:', err);
@@ -1091,6 +1581,7 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      emitSyncUpdate('driver_shifts.endRoute');
       res.json({ shift: { ...shift, ...updates, id: snap.id } });
     } catch (err) {
       console.error('end-route error:', err);
@@ -1211,6 +1702,7 @@ async function startServer() {
         }
       }
 
+      emitSyncUpdate('driver_shifts.arriveBase');
       res.json({
         shift: { ...shift, ...updates, id: snap.id },
         parentShift: updatedParentShift,
@@ -1285,6 +1777,8 @@ async function startServer() {
         status: 'EN_TURNO',
         checklistConfirmed: parent.checklistConfirmed,
         checklistConfirmedAt: parent.checklistConfirmedAt || now,
+        odometer: parent.odometer ?? null,
+        serviceTime: parent.serviceTime ?? null,
         t1StartShiftAt: now,
         t2StartRouteAt: null,
         t3EndRouteAt: null,
@@ -1339,6 +1833,7 @@ async function startServer() {
 
       await setDoc(doc(db, 'driver_shifts', supportShiftId), supportShiftDoc);
       await updateDoc(parentRef, parentUpdates);
+      emitSyncUpdate('driver_shifts.supportStart');
 
       res.status(201).json({
         supportShift: { ...supportShiftDoc, id: supportShiftId },
@@ -1450,6 +1945,7 @@ async function startServer() {
         updates.weightTons = weightParsed.value;
       }
       await updateDoc(shiftRef, updates);
+      emitSyncUpdate('driver_shifts.finalizePending');
       res.json({ shift: { ...shift, ...updates, id: snap.id } });
     } catch (err) {
       console.error('finalize-pending error:', err);
@@ -1501,6 +1997,7 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      emitSyncUpdate('driver_shifts.refillStart');
       res.json({ shift: { ...shift, ...updates, id: snap.id } });
     } catch (err) {
       console.error('refill/start error:', err);
@@ -1554,6 +2051,7 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      emitSyncUpdate('driver_shifts.refillEnd');
       res.json({ shift: { ...shift, ...updates, id: snap.id } });
     } catch (err) {
       console.error('refill/end error:', err);
@@ -1647,6 +2145,7 @@ async function startServer() {
         updatedAt: now,
       };
       await setDoc(doc(db, 'breakdown_audit_logs', auditId), auditDoc);
+      emitSyncUpdate('driver_shifts.breakdownStart');
 
       res.json({ shift: { ...shift, ...updates, id: snap.id } });
     } catch (err) {
@@ -1755,6 +2254,7 @@ async function startServer() {
         });
       }
 
+      emitSyncUpdate('driver_shifts.breakdownEnd');
       res.json({ shift: { ...shift, ...updates, id: snap.id } });
     } catch (err) {
       console.error('breakdown/end error:', err);
@@ -1860,6 +2360,7 @@ async function startServer() {
           savedAudit = { ...newAudit, id: auditId };
         }
 
+        emitSyncUpdate('driver_shifts.breakdownAck');
         res.json({
           shift: { ...shift, breakdownEvents, updatedAt: now, id: snap.id },
           auditLog: savedAudit,
@@ -2017,6 +2518,7 @@ async function startServer() {
         };
 
         await updateDoc(shiftRef, updates);
+        emitSyncUpdate('driver_shifts.updateTimes');
         res.json({ shift: { ...shift, ...updates, id: snap.id } });
       } catch (err) {
         console.error('PATCH /api/driver-shifts/:id/times error:', err);
@@ -2134,6 +2636,7 @@ async function startServer() {
             updatedAt: now,
           };
           await updateDoc(shiftRef, updates);
+          emitSyncUpdate('driver_shifts.manualRefill');
           res.status(201).json({ shift: { ...shift, ...updates, id: snap.id } });
           return;
         }
@@ -2221,6 +2724,7 @@ async function startServer() {
           updatedAt: now,
         };
         await setDoc(doc(db, 'breakdown_audit_logs', auditId), auditDoc);
+        emitSyncUpdate('driver_shifts.manualBreakdown');
 
         res.status(201).json({
           shift: { ...shift, ...updates, id: snap.id },

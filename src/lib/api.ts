@@ -129,9 +129,13 @@ export async function startDriverShiftApi(payload: {
   });
 }
 
-export async function confirmChecklistApi(shiftId: string): Promise<{ shift: DriverShift }> {
+export async function confirmChecklistApi(
+  shiftId: string,
+  payload: { odometer: number; serviceTime: string }
+): Promise<{ shift: DriverShift }> {
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/checklist-ack`, {
     method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 
@@ -265,3 +269,98 @@ export async function addManualShiftEventApi(
     body: JSON.stringify(payload),
   });
 }
+
+// ── Unified Real-Time Sync APIs (Server Bridge + SSE) ─────────────────────────
+let cachedHealthResult: boolean | null = null;
+
+export async function checkBackendHealthApi(force = false): Promise<boolean> {
+  if (!force && cachedHealthResult !== null) return cachedHealthResult;
+  try {
+    const res = await fetch('/api/health', {
+      headers: { Accept: 'application/json' },
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      cachedHealthResult = false;
+      return false;
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      cachedHealthResult = false;
+      return false;
+    }
+    const data = await res.json().catch(() => null);
+    cachedHealthResult = Boolean(data && data.ok === true);
+    return cachedHealthResult;
+  } catch {
+    cachedHealthResult = false;
+    return false;
+  }
+}
+
+export interface SyncStatePayload {
+  workGroups: any[];
+  employees: any[];
+  vehicles: any[];
+  routes: any[];
+  assignments: any[];
+  crews: any[];
+  attendances: any[];
+  driverShifts: DriverShift[];
+  breakdownAuditLogs: BreakdownAuditLog[];
+  serverTs: string;
+}
+
+export async function fetchSyncStateApi(): Promise<SyncStatePayload> {
+  return apiFetch('/api/sync/state');
+}
+
+export async function syncCreateDocApi<T = any>(
+  col: string,
+  data: Record<string, any>,
+  id?: string
+): Promise<{ id: string; doc: T }> {
+  return apiFetch(`/api/sync/${encodeURIComponent(col)}`, {
+    method: 'POST',
+    body: JSON.stringify({ data, ...(id ? { id } : {}) }),
+  });
+}
+
+export async function syncUpdateDocApi(
+  col: string,
+  id: string,
+  data: Record<string, any>
+): Promise<{ id: string; ok: boolean }> {
+  return apiFetch(`/api/sync/${encodeURIComponent(col)}/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ data }),
+  });
+}
+
+export async function syncDeleteDocApi(col: string, id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sync/${encodeURIComponent(col)}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function syncBulkEmployeesApi(
+  rows: any[],
+  activeWorkGroupId?: string | null
+): Promise<{ ok: boolean; count: number }> {
+  return apiFetch('/api/sync/employees/bulk', {
+    method: 'POST',
+    body: JSON.stringify({ rows, activeWorkGroupId: activeWorkGroupId || '' }),
+  });
+}
+
+export async function syncDeleteAllEmployeesApi(): Promise<{ ok: boolean; deleted: number }> {
+  return apiFetch('/api/sync/employees/all', {
+    method: 'DELETE',
+  });
+}
+
+export function getSyncStreamUrl(): string {
+  const token = getAuthToken();
+  return token ? `/api/sync/stream?token=${encodeURIComponent(token)}` : '/api/sync/stream';
+}
+

@@ -43,6 +43,10 @@ export interface RouteDef {
   destination: string;
   estimatedHours: number;
   workGroupId?: string;
+  routeMapPdfDataUrl?: string;
+  routeMapPdfName?: string;
+  dischargeSheetPdfDataUrl?: string;
+  dischargeSheetPdfName?: string;
 }
 
 export interface Incident {
@@ -179,6 +183,8 @@ export interface DriverShift {
 
   checklistConfirmed: boolean;
   checklistConfirmedAt?: string | null;
+  odometer?: number | null;
+  serviceTime?: string | null;
 
   t1StartShiftAt: string;
   t2StartRouteAt?: string | null;

@@ -37,6 +37,8 @@ export const AssignmentPage: React.FC = () => {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   });
   const [createdAssignment, setCreatedAssignment] = useState<Omit<Assignment, 'incidents' | 'status'> | null>(null);
+  const [assignError, setAssignError] = useState('');
+  const [assignSaving, setAssignSaving] = useState(false);
 
   // Crew state
   const [crewName, setCrewName] = useState('');
@@ -125,26 +127,27 @@ export const AssignmentPage: React.FC = () => {
     }
   };
 
-  const handleCreateAssignment = (e: React.FormEvent) => {
+  const handleCreateAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!routeId || !vehicleId || employeeIds.length === 0 || !date) return;
+    setAssignError('');
+    if (!routeId || !vehicleId || employeeIds.length === 0 || !date || assignSaving) return;
     
     // Prevent double booking route
     if (assignedRouteIds.has(routeId)) {
-      alert("Esta ruta ya se encuentra asignada para la fecha seleccionada.");
+      setAssignError('Esta ruta ya se encuentra asignada para la fecha seleccionada.');
       return;
     }
 
     // Prevent double booking vehicle
     if (occupiedVehicleIds.has(vehicleId)) {
-      alert("El vehículo seleccionado se encuentra actualmente en una ruta activa. Debe finalizar la ruta previa para asignarlo de nuevo.");
+      setAssignError('El vehículo seleccionado se encuentra actualmente en una ruta activa. Debe finalizar la ruta previa para asignarlo de nuevo.');
       return;
     }
 
     // Prevent double booking employees
     const doubleBooked = employeeIds.filter(id => assignedEmployeeIds.has(id));
     if (doubleBooked.length > 0) {
-      alert("Algunos trabajadores seleccionados ya se encuentran asignados a otra ruta en esta fecha.");
+      setAssignError('Algunos trabajadores seleccionados ya se encuentran asignados a otra ruta en esta fecha.');
       return;
     }
 
@@ -154,14 +157,20 @@ export const AssignmentPage: React.FC = () => {
       employeeIds,
       date
     };
-    
-    addAssignment(newAssignment);
-    setCreatedAssignment(newAssignment);
-    
-    setRouteId('');
-    setVehicleId('');
-    setEmployeeIds([]);
-    setSelectedCrewId('');
+
+    setAssignSaving(true);
+    try {
+      await addAssignment(newAssignment);
+      setCreatedAssignment(newAssignment);
+      setRouteId('');
+      setVehicleId('');
+      setEmployeeIds([]);
+      setSelectedCrewId('');
+    } catch (err: any) {
+      setAssignError(err?.message || 'Error al guardar la asignación. Intente nuevamente.');
+    } finally {
+      setAssignSaving(false);
+    }
   };
 
   const handleSaveCrew = (e: React.FormEvent) => {
@@ -219,6 +228,11 @@ export const AssignmentPage: React.FC = () => {
               <Map className="h-5 w-5 mr-2 text-emerald-500" />
               Nueva Asignación de Ruta
             </h2>
+            {assignError && (
+              <div className="mb-4 text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2.5">
+                {assignError}
+              </div>
+            )}
             <form onSubmit={handleCreateAssignment} className="space-y-5">
               <div>
                 <div className="flex justify-between items-center mb-1">

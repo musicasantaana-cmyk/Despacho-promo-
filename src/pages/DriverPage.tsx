@@ -20,6 +20,9 @@ import {
   LifeBuoy,
   HelpCircle,
   X,
+  FileText,
+  Download,
+  ExternalLink,
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
@@ -67,7 +70,7 @@ function formatDurationMinutes(mins?: number | null): string {
 }
 
 export const DriverPage: React.FC = () => {
-  const { state } = useAppContext();
+  const { state, syncNow } = useAppContext();
   const { user, lockedWorkGroupId } = useAuth();
 
   // Initial setup form state
@@ -88,6 +91,9 @@ export const DriverPage: React.FC = () => {
     fluidsLeaks: false,
     docsSafety: false,
   });
+  const [checklistOdometer, setChecklistOdometer] = useState('');
+  const [checklistServiceTime, setChecklistServiceTime] = useState('');
+  const [checklistError, setChecklistError] = useState('');
   const [breakdownNote, setBreakdownNote] = useState('');
   const [breakdownReporter, setBreakdownReporter] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -111,6 +117,11 @@ export const DriverPage: React.FC = () => {
   } | null>(null);
   const [weightTonsInput, setWeightTonsInput] = useState('');
   const [weightModalError, setWeightModalError] = useState('');
+  const [pdfViewerModal, setPdfViewerModal] = useState<{
+    title: string;
+    fileName: string;
+    blobUrl: string;
+  } | null>(null);
 
   type ConfirmActionType =
     | 'start-shift'
@@ -173,6 +184,14 @@ export const DriverPage: React.FC = () => {
     };
   }, []);
 
+  // Revoke generated PDF Blob URLs when closed or unmounted
+  useEffect(() => {
+    const url = pdfViewerModal?.blobUrl;
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [pdfViewerModal]);
+
   // Keep selectedGroupId synced with locked group or default group
   useEffect(() => {
     if (lockedWorkGroupId) {
@@ -189,7 +208,7 @@ export const DriverPage: React.FC = () => {
     }
   }, [user?.employeeId, selectedDriverId]);
 
-  // Automatically restore any open (not EN_BASE) shift for this user from Firestore realtime state
+  // Automatically restore or sync any open (or externally closed) shift for this user from realtime state
   // Prioritize active support shifts or unpaused shifts over paused primary shifts.
   useEffect(() => {
     if (!user || pendingParentShift) return;
@@ -206,8 +225,17 @@ export const DriverPage: React.FC = () => {
       if (!prioritized.checklistConfirmed) {
         setShowChecklistModal(true);
       }
+      return;
     }
-  }, [state.driverShifts, user, pendingParentShift]);
+
+    if (activeShift) {
+      const updatedCurrent = state.driverShifts.find(s => s.id === activeShift.id);
+      if (updatedCurrent && updatedCurrent.status === 'EN_BASE') {
+        setActiveShift(null);
+        setCompletedShiftSummary(updatedCurrent);
+      }
+    }
+  }, [state.driverShifts, user, pendingParentShift, activeShift]);
 
   // Filtered employees for selected work group
   const groupEmployees = useMemo(() => {
@@ -243,6 +271,22 @@ export const DriverPage: React.FC = () => {
     [state.routes, selectedRouteId]
   );
 
+  const effectiveRoute = useMemo(() => {
+    if (activeShift) {
+      return (
+        state.routes.find(r => activeShift.routeId && r.id === activeShift.routeId) ||
+        state.routes.find(
+          r =>
+            Boolean(activeShift.routeCode) &&
+            r.code === activeShift.routeCode &&
+            r.workGroupId === activeShift.workGroupId
+        ) ||
+        null
+      );
+    }
+    return selectedRoute;
+  }, [activeShift, state.routes, selectedRoute]);
+
   const selectedDriver = useMemo(
     () => state.employees.find(e => e.id === selectedDriverId) || null,
     [state.employees, selectedDriverId]
@@ -252,6 +296,64 @@ export const DriverPage: React.FC = () => {
     () => state.workGroups.find(g => g.id === selectedGroupId) || null,
     [state.workGroups, selectedGroupId]
   );
+
+  const handleOpenAndDownloadRoutePdf = (docType: 'map' | 'discharge') => {
+    setErrorMsg('');
+    if (!effectiveRoute) {
+      setErrorMsg('Seleccione una ruta primero para descargar y abrir su documento PDF.');
+      return;
+    }
+
+    const isMap = docType === 'map';
+    const label = isMap ? 'Mapa de la Ruta' : 'Ficha de Descargue';
+    const dataUrl = isMap ? effectiveRoute.routeMapPdfDataUrl : effectiveRoute.dischargeSheetPdfDataUrl;
+    const rawName = isMap
+      ? effectiveRoute.routeMapPdfName || `Mapa_Ruta_${effectiveRoute.code || effectiveRoute.id}.pdf`
+      : effectiveRoute.dischargeSheetPdfName || `Ficha_Descargue_${effectiveRoute.code || effectiveRoute.id}.pdf`;
+
+    if (!dataUrl || !dataUrl.startsWith('data:application/pdf;base64,')) {
+      setErrorMsg(
+        `La ruta [${effectiveRoute.code}] ${effectiveRoute.name} no tiene cargado el PDF de ${label}. Solicite a Administración o Supervisión cargarlo en Rutas Base.`
+      );
+      return;
+    }
+
+    try {
+      const base64 = dataUrl.slice('data:application/pdf;base64,'.length);
+      const binary = atob(base64);
+      if (!binary.startsWith('%PDF-')) {
+        setErrorMsg(`El archivo adjunto de ${label} no tiene un formato PDF válido.`);
+        return;
+      }
+
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      const safeFileName = rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`;
+
+      // Descarga automática del PDF
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = safeFileName;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+
+      // Apertura automática en el visor PDF integrado
+      setPdfViewerModal({
+        title: `${label} — [${effectiveRoute.code}] ${effectiveRoute.name}`,
+        fileName: safeFileName,
+        blobUrl,
+      });
+    } catch {
+      setErrorMsg(`No se pudo descargar o abrir el PDF de ${label}.`);
+    }
+  };
 
   const todayStr = new Date().toLocaleDateString('en-CA');
 
@@ -487,7 +589,11 @@ export const DriverPage: React.FC = () => {
       setCompletedShiftSummary(null);
       setActiveShift(shift);
       setChecklistItems({ brakesTires: false, lightsSignals: false, fluidsLeaks: false, docsSafety: false });
+      setChecklistOdometer('');
+      setChecklistServiceTime('');
+      setChecklistError('');
       setShowChecklistModal(true);
+      await syncNow();
     } catch (err: any) {
       setErrorMsg(err?.message || 'Error al iniciar turno.');
     } finally {
@@ -497,14 +603,33 @@ export const DriverPage: React.FC = () => {
 
   const handleConfirmChecklist = async () => {
     if (!activeShift) return;
+    setChecklistError('');
+    const parsedOdometer = Number(checklistOdometer);
+    if (checklistOdometer.trim() === '' || !Number.isFinite(parsedOdometer) || parsedOdometer < 0) {
+      setChecklistError('Ingrese un valor de Odómetro válido (mayor o igual a 0).');
+      return;
+    }
+    const cleanServiceTime = checklistServiceTime.trim();
+    if (!cleanServiceTime) {
+      setChecklistError('Ingrese el Tiempo de Servicio del vehículo.');
+      return;
+    }
+
     setBusyAction('checklist');
     setErrorMsg('');
     try {
-      const { shift } = await confirmChecklistApi(activeShift.id);
+      const { shift } = await confirmChecklistApi(activeShift.id, {
+        odometer: Number(parsedOdometer.toFixed(2)),
+        serviceTime: cleanServiceTime.slice(0, 50),
+      });
       setActiveShift(shift);
+      setChecklistOdometer('');
+      setChecklistServiceTime('');
+      setChecklistError('');
       setShowChecklistModal(false);
+      await syncNow();
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Error al confirmar checklist.');
+      setChecklistError(err?.message || 'Error al confirmar checklist.');
     } finally {
       setBusyAction(null);
     }
@@ -517,6 +642,7 @@ export const DriverPage: React.FC = () => {
     try {
       const { shift } = await startRouteApi(activeShift.id);
       setActiveShift(shift);
+      await syncNow();
     } catch (err: any) {
       setErrorMsg(err?.message || 'No se pudo iniciar la ruta.');
     } finally {
@@ -531,6 +657,7 @@ export const DriverPage: React.FC = () => {
     try {
       const { shift } = await endRouteApi(activeShift.id);
       setActiveShift(shift);
+      await syncNow();
     } catch (err: any) {
       setErrorMsg(err?.message || 'No se pudo finalizar la ruta.');
     } finally {
@@ -604,6 +731,7 @@ export const DriverPage: React.FC = () => {
       } else {
         setCompletedShiftSummary(shift);
       }
+      await syncNow();
       return true;
     } catch (err: any) {
       const msg = err?.message || 'No se pudo registrar llegada a base.';
@@ -657,6 +785,7 @@ export const DriverPage: React.FC = () => {
       setShowSupportRouteModal(false);
       setCompletedShiftSummary(null);
       setActiveShift(supportShift);
+      await syncNow();
     } catch (err: any) {
       setErrorMsg(err?.message || 'No se pudo iniciar la ruta de apoyo.');
     } finally {
@@ -685,6 +814,7 @@ export const DriverPage: React.FC = () => {
       setPendingParentShift(null);
       setActiveShift(null);
       setCompletedShiftSummary(shift);
+      await syncNow();
       return true;
     } catch (err: any) {
       const msg = err?.message || 'No se pudo finalizar la ruta pendiente.';
@@ -705,6 +835,7 @@ export const DriverPage: React.FC = () => {
         ? await endRefillApi(activeShift.id)
         : await startRefillApi(activeShift.id);
       setActiveShift(shift);
+      await syncNow();
     } catch (err: any) {
       setErrorMsg(err?.message || 'Error al actualizar estado de relleno/descargue.');
     } finally {
@@ -728,6 +859,7 @@ export const DriverPage: React.FC = () => {
         setBreakdownNote('');
       }
       setBreakdownReporter('');
+      await syncNow();
     } catch (err: any) {
       setErrorMsg(err?.message || 'Error al actualizar estado de avería mecánica.');
     } finally {
@@ -779,6 +911,13 @@ export const DriverPage: React.FC = () => {
     checklistItems.lightsSignals &&
     checklistItems.fluidsLeaks &&
     checklistItems.docsSafety;
+
+  const isChecklistComplete =
+    allChecklistChecked &&
+    checklistOdometer.trim() !== '' &&
+    Number.isFinite(Number(checklistOdometer)) &&
+    Number(checklistOdometer) >= 0 &&
+    checklistServiceTime.trim().length > 0;
 
   return (
     <div className="max-w-4xl mx-auto space-y-5 pb-10">
@@ -847,6 +986,48 @@ export const DriverPage: React.FC = () => {
                 </span>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Documentos PDF de la Ruta (Mapa de la Ruta y Ficha de Descargue) */}
+        <div className="mt-4 pt-4 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="text-xs text-slate-400">
+            {effectiveRoute ? (
+              <span>
+                Documentos de ruta <strong className="text-slate-200">[{effectiveRoute.code}] {effectiveRoute.name}</strong>
+              </span>
+            ) : (
+              <span>Seleccione una ruta para consultar sus documentos PDF</span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => handleOpenAndDownloadRoutePdf('map')}
+              className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-bold uppercase tracking-wide flex items-center gap-2 transition-all border ${
+                effectiveRoute?.routeMapPdfDataUrl
+                  ? 'bg-sky-600 hover:bg-sky-500 text-white border-sky-500 shadow-sm active:scale-[0.98]'
+                  : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+            >
+              <FileText className="h-4 w-4 shrink-0" />
+              <span>Mapa de la Ruta</span>
+              <Download className="h-3.5 w-3.5 opacity-80 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenAndDownloadRoutePdf('discharge')}
+              className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-bold uppercase tracking-wide flex items-center gap-2 transition-all border ${
+                effectiveRoute?.dischargeSheetPdfDataUrl
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-sm active:scale-[0.98]'
+                  : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+            >
+              <FileText className="h-4 w-4 shrink-0" />
+              <span>Ficha de Descargue</span>
+              <Download className="h-3.5 w-3.5 opacity-80 shrink-0" />
+            </button>
           </div>
         </div>
       </div>
@@ -968,37 +1149,6 @@ export const DriverPage: React.FC = () => {
               </select>
             </div>
           </div>
-
-          {/* Quick-pick vehicle chips for touch ergonomics */}
-          {groupVehicles.length > 0 && (
-            <div>
-              <span className="block text-xs font-semibold text-slate-500 mb-2">
-                Selección rápida de móvil operativo ({selectedGroup?.name}):
-              </span>
-              <div className="flex flex-wrap gap-2">
-                {groupVehicles.map(v => {
-                  const isPicked = vehicleNumber.trim().toLowerCase() === v.internalNumber.toLowerCase();
-                  return (
-                    <button
-                      key={v.id}
-                      type="button"
-                      onClick={() => {
-                        setVehicleNumber(v.internalNumber);
-                        setSelectedVehicleId(v.id);
-                      }}
-                      className={`min-h-[44px] px-3.5 py-2 rounded-xl text-sm font-bold border transition-colors ${
-                        isPicked
-                          ? 'bg-emerald-600 text-white border-emerald-600'
-                          : 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      Móvil {v.internalNumber} · {v.plate}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
           {/* Primary Action: Botón 1 - Inicio de Turno */}
           <div className="pt-2">
@@ -1582,15 +1732,15 @@ export const DriverPage: React.FC = () => {
       {/* Mandatory Preoperational Checklist Modal */}
       {showChecklistModal && activeShift && (
         <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200">
-            <div className="bg-amber-500 text-slate-950 p-5 flex items-center gap-3">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden border border-slate-200">
+            <div className="bg-amber-500 text-slate-950 p-5 flex items-center gap-3 shrink-0">
               <ShieldCheck className="h-8 w-8 shrink-0" />
               <div>
                 <h3 className="font-bold text-lg leading-tight">Recordatorio Obligatorio</h3>
                 <p className="text-xs font-semibold opacity-90">Checklist Preoperacional del Vehículo</p>
               </div>
             </div>
-            <div className="p-5 space-y-4">
+            <div className="p-5 space-y-4 overflow-y-auto">
               <p className="text-sm text-slate-700 leading-relaxed">
                 Antes de iniciar marcha con el <strong>Móvil {activeShift.vehicleNumber}</strong>, realice y verifique el{' '}
                 <strong>Checklist Preoperacional</strong> completo:
@@ -1621,10 +1771,54 @@ export const DriverPage: React.FC = () => {
                 })}
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Odómetro (km) <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    required
+                    value={checklistOdometer}
+                    onChange={e => {
+                      setChecklistOdometer(e.target.value);
+                      if (checklistError) setChecklistError('');
+                    }}
+                    placeholder="Ej. 125430"
+                    className="w-full h-12 border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 rounded-xl px-3.5 text-sm font-bold font-mono tabular-nums text-slate-900 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Tiempo de Servicio <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={50}
+                    required
+                    value={checklistServiceTime}
+                    onChange={e => {
+                      setChecklistServiceTime(e.target.value);
+                      if (checklistError) setChecklistError('');
+                    }}
+                    placeholder="Ej. 4520 hrs / 08:30"
+                    className="w-full h-12 border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 rounded-xl px-3.5 text-sm font-bold font-mono text-slate-900 outline-none"
+                  />
+                </div>
+              </div>
+
+              {checklistError && (
+                <div className="text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+                  {checklistError}
+                </div>
+              )}
+
               <button
                 type="button"
                 onClick={handleConfirmChecklist}
-                disabled={!allChecklistChecked || busyAction === 'checklist'}
+                disabled={!isChecklistComplete || busyAction === 'checklist'}
                 className="w-full min-h-[52px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-base disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {busyAction === 'checklist' ? 'Confirmando...' : 'Checklist Preoperacional Realizado'}
@@ -2141,6 +2335,66 @@ export const DriverPage: React.FC = () => {
               </div>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Visor PDF integrado (Mapa de la Ruta / Ficha de Descargue) */}
+      {pdfViewerModal && (
+        <div
+          className="fixed inset-0 z-[70] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-5"
+          onClick={() => setPdfViewerModal(null)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden border border-slate-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="bg-slate-900 text-white px-4 sm:px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <FileText className="h-5 w-5 text-emerald-400 shrink-0" />
+                <div className="min-w-0">
+                  <h3 className="font-bold text-sm sm:text-base truncate">{pdfViewerModal.title}</h3>
+                  <p className="text-[11px] text-slate-300 truncate">
+                    Descargado automáticamente: {pdfViewerModal.fileName}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={pdfViewerModal.blobUrl}
+                  download={pdfViewerModal.fileName}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Descargar PDF</span>
+                </a>
+                <a
+                  href={pdfViewerModal.blobUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  <span>Abrir en pestaña</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPdfViewerModal(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                  title="Cerrar visor PDF"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 bg-slate-100 relative">
+              <iframe
+                src={pdfViewerModal.blobUrl}
+                title={pdfViewerModal.title}
+                className="w-full h-full border-0"
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>

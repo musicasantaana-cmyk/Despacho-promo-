@@ -118,6 +118,8 @@ export const DriverShiftsReportView: React.FC = () => {
       Ruta: s.routeCode || s.routeName || '',
       Estado: `${s.status}${s.isPausedForSupport ? ' (Pausada por Apoyo)' : ''}`,
       'Checklist Confirmado': s.checklistConfirmed ? 'SI' : 'NO',
+      'Odometro (km)': s.odometer !== null && s.odometer !== undefined ? s.odometer : '',
+      'Tiempo de Servicio': s.serviceTime || '',
       'T1 Inicio Turno': formatTimeShort(s.t1StartShiftAt),
       'T2 Inicio Ruta': formatTimeShort(s.t2StartRouteAt),
       'T3 Fin Ruta': formatTimeShort(s.t3EndRouteAt),
@@ -408,14 +410,30 @@ export const DriverShiftsReportView: React.FC = () => {
               </button>
             </div>
             <div className="p-5 space-y-4 overflow-y-auto text-sm">
-              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
-                <span className="text-slate-600 flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                  Checklist Preoperacional
-                </span>
-                <span className="font-semibold text-slate-900">
-                  {detailShift.checklistConfirmed ? `Confirmado (${formatTimeShort(detailShift.checklistConfirmedAt)})` : 'Pendiente'}
-                </span>
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600 flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                    Checklist Preoperacional
+                  </span>
+                  <span className="font-semibold text-slate-900">
+                    {detailShift.checklistConfirmed ? `Confirmado (${formatTimeShort(detailShift.checklistConfirmedAt)})` : 'Pendiente'}
+                  </span>
+                </div>
+                {(detailShift.odometer !== null && detailShift.odometer !== undefined) || detailShift.serviceTime ? (
+                  <div className="pt-2 border-t border-slate-200 flex flex-wrap gap-4 text-xs">
+                    {detailShift.odometer !== null && detailShift.odometer !== undefined && (
+                      <span className="text-slate-600">
+                        Odómetro: <strong className="font-mono tabular-nums text-slate-900">{detailShift.odometer} km</strong>
+                      </span>
+                    )}
+                    {detailShift.serviceTime && (
+                      <span className="text-slate-600">
+                        Tiempo de Servicio: <strong className="font-mono text-slate-900">{detailShift.serviceTime}</strong>
+                      </span>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
               {(() => {

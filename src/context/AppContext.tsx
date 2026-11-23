@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   AppState,
   Employee,
@@ -14,13 +14,24 @@ import {
   DriverShift,
   BreakdownAuditLog,
 } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, handleFirestoreError, isFirebaseConfigured, OperationType } from '../lib/firebase';
 import { collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { useAuth } from './AuthContext';
+import {
+  checkBackendHealthApi,
+  fetchSyncStateApi,
+  getSyncStreamUrl,
+  syncBulkEmployeesApi,
+  syncCreateDocApi,
+  syncDeleteAllEmployeesApi,
+  syncDeleteDocApi,
+  syncUpdateDocApi,
+} from '../lib/api';
 
 interface AppContextProps {
   state: AppState;
   syncStatus: SyncStatus;
+  useBackendSync: boolean;
   syncNow: () => Promise<void>;
   setLatencyInterval: (seconds: number) => void;
   addWorkGroup: (name: string) => Promise<void>;
@@ -83,6 +94,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   });
 
+  const [backendMode, setBackendMode] = useState<boolean | null>(null);
+  const refreshInFlightRef = useRef<Promise<void> | null>(null);
+
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     isOnline: true,
     isSyncing: false,
@@ -93,9 +107,135 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     syncProtocol: 'Firestore Realtime',
   });
 
+  // Detect whether the Express backend sync bridge is active (AI Studio / full-stack)
   useEffect(() => {
+    let active = true;
+    checkBackendHealthApi().then(ok => {
+      if (active) {
+        setBackendMode(ok);
+        if (ok) {
+          setSyncStatus(prev => ({ ...prev, syncProtocol: 'Backend Realtime SSE' }));
+        }
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const refreshFromBackend = useCallback(async () => {
     if (!user) return;
-    setSyncStatus(prev => ({ ...prev, isOnline: true }));
+    if (refreshInFlightRef.current) {
+      return refreshInFlightRef.current;
+    }
+    const job = (async () => {
+      try {
+        const snapshot = await fetchSyncStateApi();
+        setRawState(prev => {
+          const docs = snapshot.workGroups || [];
+          let nextActive = lockedWorkGroupId || prev.activeWorkGroupId;
+          if (!nextActive && docs.length > 0) nextActive = docs[0].id;
+          if (nextActive && docs.length > 0 && !docs.find(g => g.id === nextActive)) {
+            nextActive = lockedWorkGroupId || docs[0].id;
+          }
+          if (nextActive) localStorage.setItem('PROMO_ACTIVE_GROUP', nextActive);
+          return {
+            ...prev,
+            workGroups: docs,
+            activeWorkGroupId: nextActive,
+            employees: snapshot.employees || [],
+            vehicles: snapshot.vehicles || [],
+            routes: snapshot.routes || [],
+            assignments: snapshot.assignments || [],
+            crews: snapshot.crews || [],
+            attendances: snapshot.attendances || [],
+            driverShifts: snapshot.driverShifts || [],
+            breakdownAuditLogs: snapshot.breakdownAuditLogs || [],
+          };
+        });
+        setSyncStatus(prev => ({
+          ...prev,
+          isOnline: true,
+          lastSyncTime: new Date().toLocaleTimeString(),
+        }));
+      } catch (err) {
+        console.warn('Error sincronizando estado con servidor:', err);
+        setSyncStatus(prev => ({ ...prev, isOnline: false }));
+      } finally {
+        refreshInFlightRef.current = null;
+      }
+    })();
+    refreshInFlightRef.current = job;
+    return job;
+  }, [user, lockedWorkGroupId]);
+
+  // Unified subscription: SSE + /api/sync/state when backendMode === true; direct client Firestore otherwise
+  useEffect(() => {
+    if (!user) {
+      setSyncStatus(prev => ({ ...prev, isOnline: false }));
+      return;
+    }
+
+    if (backendMode === null) return;
+
+    if (backendMode === true) {
+      setSyncStatus(prev => ({ ...prev, isOnline: true, syncProtocol: 'Backend Realtime SSE' }));
+      void refreshFromBackend();
+
+      let es: EventSource | null = null;
+      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      let closed = false;
+
+      const connectStream = () => {
+        if (closed) return;
+        try {
+          es = new EventSource(getSyncStreamUrl(), { withCredentials: true });
+          es.onmessage = event => {
+            try {
+              const payload = JSON.parse(event.data);
+              if (payload?.type === 'sync') {
+                void refreshFromBackend();
+              }
+            } catch {
+              // ignore heartbeat/invalid frames
+            }
+          };
+          es.onerror = () => {
+            es?.close();
+            es = null;
+            if (!closed && !reconnectTimer) {
+              reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connectStream();
+              }, 3000);
+            }
+          };
+        } catch {
+          // fallback polling handles updates
+        }
+      };
+
+      connectStream();
+
+      const fallbackMs = Math.max(5, syncStatus.latencyInterval || 15) * 1000;
+      const pollTimer = setInterval(() => {
+        void refreshFromBackend();
+      }, fallbackMs);
+
+      return () => {
+        closed = true;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        clearInterval(pollTimer);
+        es?.close();
+      };
+    }
+
+    // Static / Direct Client Firestore Mode (Vercel)
+    if (!isFirebaseConfigured || !db) {
+      setSyncStatus(prev => ({ ...prev, isOnline: false }));
+      return;
+    }
+    setSyncStatus(prev => ({ ...prev, isOnline: true, syncProtocol: 'Firestore Realtime' }));
 
     const unsubWorkGroups = onSnapshot(
       collection(db, 'workGroups'),
@@ -113,7 +253,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error workGroups', err);
+        console.warn('Firestore error workGroups', err?.message || err);
         try {
           handleFirestoreError(err, OperationType.LIST, 'workGroups');
         } catch {}
@@ -127,7 +267,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error employees', err);
+        console.warn('Firestore error employees', err?.message || err);
       }
     );
 
@@ -138,7 +278,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error vehicles', err);
+        console.warn('Firestore error vehicles', err?.message || err);
       }
     );
 
@@ -149,7 +289,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error routes', err);
+        console.warn('Firestore error routes', err?.message || err);
       }
     );
 
@@ -174,7 +314,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error assignments', err);
+        console.warn('Firestore error assignments', err?.message || err);
       }
     );
 
@@ -185,7 +325,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error crews', err);
+        console.warn('Firestore error crews', err?.message || err);
       }
     );
 
@@ -196,7 +336,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error attendances', err);
+        console.warn('Firestore error attendances', err?.message || err);
       }
     );
 
@@ -210,7 +350,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error driver_shifts', err);
+        console.warn('Firestore error driver_shifts', err?.message || err);
       }
     );
 
@@ -224,7 +364,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
       },
       err => {
-        console.error('Firestore error breakdown_audit_logs', err);
+        console.warn('Firestore error breakdown_audit_logs', err?.message || err);
       }
     );
 
@@ -239,7 +379,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubDriverShifts();
       unsubBreakdownAuditLogs();
     };
-  }, [user, lockedWorkGroupId]);
+  }, [user, lockedWorkGroupId, backendMode, refreshFromBackend, syncStatus.latencyInterval]);
 
   // Enforce RBAC & Group Isolation on the exposed state
   const state = useMemo<AppState>(() => {
@@ -289,15 +429,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return rawState;
   }, [rawState, user, lockedWorkGroupId, isConductor]);
 
-  const syncNow = async () => {
+  const useBackendSync = backendMode === true;
+
+  const syncNow = useCallback(async () => {
     setSyncStatus(prev => ({ ...prev, isSyncing: true }));
-    await new Promise(r => setTimeout(r, 400));
-    setSyncStatus(prev => ({
-      ...prev,
-      isSyncing: false,
-      lastSyncTime: new Date().toLocaleTimeString(),
-    }));
-  };
+    try {
+      if (useBackendSync) {
+        await refreshFromBackend();
+      } else {
+        await new Promise(r => setTimeout(r, 350));
+      }
+    } finally {
+      setSyncStatus(prev => ({
+        ...prev,
+        isSyncing: false,
+        lastSyncTime: new Date().toLocaleTimeString(),
+      }));
+    }
+  }, [useBackendSync, refreshFromBackend]);
 
   const setLatencyInterval = (seconds: number) => {
     setSyncStatus(prev => ({ ...prev, latencyInterval: seconds }));
@@ -331,6 +480,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addWorkGroup = async (name: string) => {
     if (!canManageAllGroups) return;
     try {
+      if (useBackendSync) {
+        const { id } = await syncCreateDocApi('workGroups', { name });
+        await refreshFromBackend();
+        setActiveWorkGroup(id);
+        return;
+      }
       const docRef = doc(collection(db, 'workGroups'));
       await setDoc(docRef, { name });
       setActiveWorkGroup(docRef.id);
@@ -342,6 +497,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteWorkGroup = async (id: string) => {
     if (!canManageAllGroups) return;
     try {
+      if (useBackendSync) {
+        await syncDeleteDocApi('workGroups', id);
+        await refreshFromBackend();
+        return;
+      }
       await deleteDoc(doc(db, 'workGroups', id));
     } catch (e) {
       console.error(e);
@@ -355,8 +515,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addEmployee = async (emp: Omit<Employee, 'id'>) => {
     try {
+      const payload = { ...emp, workGroupId: resolveScopedWorkGroupId(emp.workGroupId) };
+      if (useBackendSync) {
+        await syncCreateDocApi('employees', payload);
+        await refreshFromBackend();
+        return;
+      }
       const docRef = doc(collection(db, 'employees'));
-      await setDoc(docRef, { ...emp, workGroupId: resolveScopedWorkGroupId(emp.workGroupId) });
+      await setDoc(docRef, payload);
     } catch (e) {
       console.error(e);
     }
@@ -365,6 +531,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateEmployee = async (id: string, emp: Partial<Employee>) => {
     try {
       const safeEmp = lockedWorkGroupId ? { ...emp, workGroupId: lockedWorkGroupId } : emp;
+      if (useBackendSync) {
+        await syncUpdateDocApi('employees', id, safeEmp);
+        await refreshFromBackend();
+        return;
+      }
       await updateDoc(doc(db, 'employees', id), safeEmp);
     } catch (e) {
       console.error(e);
@@ -373,6 +544,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteEmployee = async (id: string) => {
     try {
+      if (useBackendSync) {
+        await syncDeleteDocApi('employees', id);
+        await refreshFromBackend();
+        return;
+      }
       await deleteDoc(doc(db, 'employees', id));
     } catch (e) {
       console.error(e);
@@ -382,6 +558,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteAllEmployees = async () => {
     if (!canManageAllGroups) return;
     try {
+      if (useBackendSync) {
+        await syncDeleteAllEmployeesApi();
+        await refreshFromBackend();
+        return;
+      }
       const batch = writeBatch(db);
       state.employees.forEach(e => batch.delete(doc(db, 'employees', e.id)));
       await batch.commit();
@@ -392,6 +573,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const importEmployeesBulk = async (rawRows: any[]) => {
     try {
+      if (useBackendSync) {
+        await syncBulkEmployeesApi(rawRows, state.activeWorkGroupId);
+        await refreshFromBackend();
+        return;
+      }
       const batch = writeBatch(db);
       let currentWorkGroups = [...rawState.workGroups];
 
@@ -444,8 +630,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addVehicle = async (veh: Omit<Vehicle, 'id'>) => {
     try {
+      const payload = { ...veh, workGroupId: resolveScopedWorkGroupId(veh.workGroupId) };
+      if (useBackendSync) {
+        await syncCreateDocApi('vehicles', payload);
+        await refreshFromBackend();
+        return;
+      }
       const docRef = doc(collection(db, 'vehicles'));
-      await setDoc(docRef, { ...veh, workGroupId: resolveScopedWorkGroupId(veh.workGroupId) });
+      await setDoc(docRef, payload);
     } catch (e) {
       console.error(e);
     }
@@ -454,6 +646,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateVehicle = async (id: string, veh: Partial<Vehicle>) => {
     try {
       const safeVeh = lockedWorkGroupId ? { ...veh, workGroupId: lockedWorkGroupId } : veh;
+      if (useBackendSync) {
+        await syncUpdateDocApi('vehicles', id, safeVeh);
+        await refreshFromBackend();
+        return;
+      }
       await updateDoc(doc(db, 'vehicles', id), safeVeh);
     } catch (e) {
       console.error(e);
@@ -462,6 +659,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteVehicle = async (id: string) => {
     try {
+      if (useBackendSync) {
+        await syncDeleteDocApi('vehicles', id);
+        await refreshFromBackend();
+        return;
+      }
       await deleteDoc(doc(db, 'vehicles', id));
     } catch (e) {
       console.error(e);
@@ -470,8 +672,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addRoute = async (route: Omit<RouteDef, 'id'>) => {
     try {
+      const payload = { ...route, workGroupId: resolveScopedWorkGroupId(route.workGroupId) };
+      if (useBackendSync) {
+        await syncCreateDocApi('routes', payload);
+        await refreshFromBackend();
+        return;
+      }
       const docRef = doc(collection(db, 'routes'));
-      await setDoc(docRef, { ...route, workGroupId: resolveScopedWorkGroupId(route.workGroupId) });
+      await setDoc(docRef, payload);
     } catch (e) {
       console.error(e);
     }
@@ -480,6 +688,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateRoute = async (id: string, route: Partial<RouteDef>) => {
     try {
       const safeRoute = lockedWorkGroupId ? { ...route, workGroupId: lockedWorkGroupId } : route;
+      if (useBackendSync) {
+        await syncUpdateDocApi('routes', id, safeRoute);
+        await refreshFromBackend();
+        return;
+      }
       await updateDoc(doc(db, 'routes', id), safeRoute);
     } catch (e) {
       console.error(e);
@@ -488,6 +701,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteRoute = async (id: string) => {
     try {
+      if (useBackendSync) {
+        await syncDeleteDocApi('routes', id);
+        await refreshFromBackend();
+        return;
+      }
       await deleteDoc(doc(db, 'routes', id));
     } catch (e) {
       console.error(e);
@@ -496,8 +714,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addCrew = async (crew: Omit<CrewTemplate, 'id'>) => {
     try {
+      const payload = { ...crew, workGroupId: resolveScopedWorkGroupId(crew.workGroupId) };
+      if (useBackendSync) {
+        await syncCreateDocApi('crews', payload);
+        await refreshFromBackend();
+        return;
+      }
       const docRef = doc(collection(db, 'crews'));
-      await setDoc(docRef, { ...crew, workGroupId: resolveScopedWorkGroupId(crew.workGroupId) });
+      await setDoc(docRef, payload);
     } catch (e) {
       console.error(e);
     }
@@ -506,6 +730,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateCrew = async (id: string, crew: Partial<CrewTemplate>) => {
     try {
       const safeCrew = lockedWorkGroupId ? { ...crew, workGroupId: lockedWorkGroupId } : crew;
+      if (useBackendSync) {
+        await syncUpdateDocApi('crews', id, safeCrew);
+        await refreshFromBackend();
+        return;
+      }
       await updateDoc(doc(db, 'crews', id), safeCrew);
     } catch (e) {
       console.error(e);
@@ -514,6 +743,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteCrew = async (id: string) => {
     try {
+      if (useBackendSync) {
+        await syncDeleteDocApi('crews', id);
+        await refreshFromBackend();
+        return;
+      }
       await deleteDoc(doc(db, 'crews', id));
     } catch (e) {
       console.error(e);
@@ -539,8 +773,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         endTime: '',
       };
 
-      const docRef = doc(collection(db, 'assignments'));
-      await setDoc(docRef, {
+      const payload = {
         routeId: assignment.routeId,
         vehicleId: assignment.vehicleId,
         employeeIds: assignment.employeeIds,
@@ -549,9 +782,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         incidents: [metaIncident],
         workGroupId: resolveScopedWorkGroupId(assignment.workGroupId),
         weightTons: assignment.weightTons || 0,
-      });
+      };
+
+      if (useBackendSync) {
+        await syncCreateDocApi('assignments', payload);
+        await refreshFromBackend();
+        return;
+      }
+
+      const docRef = doc(collection(db, 'assignments'));
+      await setDoc(docRef, payload);
     } catch (e) {
       console.error(e);
+      throw e;
     }
   };
 
@@ -592,6 +835,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const baseIncidents = (assignment?.incidents || []).filter(i => i.id !== 'SYS_META');
       updateData.incidents = [...baseIncidents, metaIncident];
+
+      if (useBackendSync) {
+        await syncUpdateDocApi('assignments', id, updateData);
+        await refreshFromBackend();
+        return;
+      }
 
       await updateDoc(doc(db, 'assignments', id), updateData);
     } catch (e) {
@@ -646,6 +895,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const baseIncidents = (assignment.incidents || []).filter(i => i.id !== 'SYS_META');
         updateData.incidents = [...baseIncidents, metaIncident];
       }
+
+      if (useBackendSync) {
+        await syncUpdateDocApi('assignments', id, updateData);
+        await refreshFromBackend();
+        return;
+      }
+
       await updateDoc(doc(db, 'assignments', id), updateData);
     } catch (e) {
       console.error(e);
@@ -682,6 +938,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
 
       const updatedIncidents = [...(assignment.incidents || []), newIncident, metaIncident];
+
+      if (useBackendSync) {
+        await syncUpdateDocApi('assignments', assignmentId, { incidents: updatedIncidents });
+        await refreshFromBackend();
+        return;
+      }
+
       await updateDoc(doc(db, 'assignments', assignmentId), { incidents: updatedIncidents });
     } catch (e) {
       console.error(e);
@@ -691,10 +954,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const saveAttendance = async (attendance: Omit<Attendance, 'id'>) => {
     try {
       const docId = `${attendance.employeeId}_${attendance.date}`;
-      await setDoc(doc(db, 'attendances', docId), {
+      const payload = {
         ...attendance,
         workGroupId: resolveScopedWorkGroupId(attendance.workGroupId),
-      });
+      };
+      if (useBackendSync) {
+        await syncCreateDocApi('attendances', payload, docId);
+        await refreshFromBackend();
+        return;
+      }
+      await setDoc(doc(db, 'attendances', docId), payload);
     } catch (e) {
       console.error(e);
     }
@@ -705,6 +974,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       value={{
         state,
         syncStatus,
+        useBackendSync,
         syncNow,
         setLatencyInterval,
         addWorkGroup,
@@ -743,3 +1013,4 @@ export const useAppContext = () => {
   if (!context) throw new Error('useAppContext must be used within AppProvider');
   return context;
 };
+
