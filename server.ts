@@ -1114,27 +1114,42 @@ async function startServer() {
 
           const nextVehicleId = String(rawUpdates.vehicleId !== undefined ? rawUpdates.vehicleId : existing.vehicleId || '');
           const nextRouteId = String(rawUpdates.routeId !== undefined ? rawUpdates.routeId : existing.routeId || '');
-          const nextEmployeeIds = Array.isArray(rawUpdates.employeeIds)
-            ? rawUpdates.employeeIds
-            : Array.isArray(existing.employeeIds)
-              ? existing.employeeIds
-              : [];
+          const vehicleChanged = rawUpdates.vehicleId !== undefined && nextVehicleId !== existing.vehicleId;
+          const routeChanged = rawUpdates.routeId !== undefined && nextRouteId !== existing.routeId;
+          const crewChanged = rawUpdates.employeeIds !== undefined;
 
-          const check = validateAssignmentSelection({
-            routeId: nextRouteId,
-            vehicleId: nextVehicleId,
-            employeeIds: nextEmployeeIds,
-            routes,
-            vehicles,
-            employees,
-            requireOperationalVehicle: rawUpdates.vehicleId !== undefined && nextVehicleId !== existing.vehicleId,
-          });
-          if (!check.ok) {
-            res.status(400).json({ error: check.error || 'Actualización de asignación inválida.' });
-            return;
-          }
-          if (rawUpdates.employeeIds !== undefined) {
+          if (crewChanged) {
+            const check = validateAssignmentSelection({
+              routeId: nextRouteId,
+              vehicleId: nextVehicleId,
+              employeeIds: Array.isArray(rawUpdates.employeeIds) ? rawUpdates.employeeIds : [],
+              routes,
+              vehicles,
+              employees,
+              requireOperationalVehicle: vehicleChanged,
+            });
+            if (!check.ok) {
+              res.status(400).json({ error: check.error || 'Actualización de asignación inválida.' });
+              return;
+            }
             rawUpdates.employeeIds = check.normalizedEmployeeIds;
+          } else if (vehicleChanged || routeChanged) {
+            const routeMatch = routes.find(r => r.id === nextRouteId);
+            if (!routeMatch) {
+              res.status(400).json({ error: 'Debe seleccionar una ruta existente en el catálogo.' });
+              return;
+            }
+            const vehicleMatch = vehicles.find(v => v.id === nextVehicleId);
+            if (!vehicleMatch) {
+              res.status(400).json({ error: 'Debe seleccionar un vehículo existente en el catálogo.' });
+              return;
+            }
+            if (vehicleChanged && vehicleMatch.status !== 'Operativo') {
+              res.status(400).json({
+                error: `El vehículo Móvil ${vehicleMatch.internalNumber} (${vehicleMatch.plate}) figura como Inoperativo.`,
+              });
+              return;
+            }
           }
         } else if (colName === 'crews' && (rawUpdates.driverId !== undefined || rawUpdates.assistantIds !== undefined)) {
           const targetGroupId = String(rawUpdates.workGroupId || existing.workGroupId || '').trim();

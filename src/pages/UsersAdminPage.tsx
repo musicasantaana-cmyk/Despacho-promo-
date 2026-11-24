@@ -543,11 +543,20 @@ export const UsersAdminPage: React.FC = () => {
               {form.role === 'conductor' && (
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    Vincular con Conductor del Directorio (Opcional)
+                    Vincular con Conductor del Directorio (Recomendado)
                   </label>
                   <select
                     value={form.employeeId}
-                    onChange={e => setForm({ ...form, employeeId: e.target.value })}
+                    onChange={e => {
+                      const empId = e.target.value;
+                      const emp = state.employees.find(item => item.id === empId);
+                      setForm(prev => ({
+                        ...prev,
+                        employeeId: empId,
+                        fullName: emp && !prev.fullName.trim() ? emp.name : prev.fullName,
+                        workGroupId: emp && !prev.workGroupId && emp.workGroupId ? emp.workGroupId : prev.workGroupId,
+                      }));
+                    }}
                     className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
                   >
                     <option value="">El conductor seleccionará su nombre al iniciar</option>

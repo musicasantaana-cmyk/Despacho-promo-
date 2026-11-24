@@ -348,3 +348,144 @@ export function getEffectiveAssignmentWithShift(
     effectiveWeightTons,
   };
 }
+
+function normalizeMatchText(value?: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function resolveUserConductorEmployee(
+  user: { employeeId?: string; workGroupId?: string; fullName?: string; username?: string } | null | undefined,
+  employees: Employee[] = []
+): Employee | null {
+  if (!user || employees.length === 0) return null;
+
+  if (user.employeeId) {
+    const exactById = employees.find(e => e.id === user.employeeId);
+    if (exactById) return exactById;
+  }
+
+  const scoped =
+    user.workGroupId && user.workGroupId !== 'ALL'
+      ? employees.filter(e => e.workGroupId === user.workGroupId)
+      : employees;
+  const driverCandidates = scoped.filter(e => isConductorRole(e.role));
+  const pool = driverCandidates.length > 0 ? driverCandidates : scoped;
+
+  const userNormCandidates = [normalizeMatchText(user.fullName), normalizeMatchText(user.username)].filter(Boolean);
+  if (userNormCandidates.length === 0) return null;
+
+  // 1. Exact normalized full-name match
+  const exactMatches = pool.filter(e => {
+    const empNorm = normalizeMatchText(e.name);
+    return Boolean(empNorm) && userNormCandidates.includes(empNorm);
+  });
+  if (exactMatches.length === 1) return exactMatches[0];
+
+  // 2. Unambiguous compact match (handles usernames like "RISCANEVOJUAN" -> "RISCANEVO COTRINA JUAN PABLO")
+  const userCompacts = userNormCandidates.map(s => s.replace(/\s+/g, '')).filter(s => s.length >= 6);
+  const scored = pool
+    .map(emp => {
+      const tokens = normalizeMatchText(emp.name)
+        .split(' ')
+        .filter(t => t.length >= 3);
+      if (tokens.length === 0) return { emp, score: 0 };
+
+      let bestScore = 0;
+      for (const compact of userCompacts) {
+        if (compact === tokens.join('')) {
+          bestScore = Math.max(bestScore, 100);
+          continue;
+        }
+        const matchedTokens = tokens.filter(t => compact.includes(t));
+        const matchedLen = matchedTokens.reduce((acc, t) => acc + t.length, 0);
+        if (matchedTokens.length >= 2 && matchedLen >= compact.length * 0.75) {
+          bestScore = Math.max(bestScore, matchedTokens.length * 10 + matchedLen);
+        }
+      }
+      return { emp, score: bestScore };
+    })
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 1) return scored[0].emp;
+  if (scored.length > 1 && scored[0].score > scored[1].score + 5) {
+    return scored[0].emp;
+  }
+
+  return null;
+}
+
+export function findTodayPredefinedAssignment(params: {
+  driverId?: string;
+  vehicleId?: string;
+  workGroupId?: string;
+  assignments: Assignment[];
+  employees?: Employee[];
+  todayStr: string;
+}): Assignment | null {
+  const { driverId, vehicleId, workGroupId, assignments, employees = [], todayStr } = params;
+  if (!driverId && !vehicleId) return null;
+
+  const candidates = assignments.filter(a => {
+    if (!a.date || a.date.slice(0, 10) !== todayStr) return false;
+    if (a.status === 'Cancelado' || a.status === 'Base') return false;
+    if (workGroupId && a.workGroupId && a.workGroupId !== workGroupId) return false;
+
+    const assignedDriver = resolveAssignmentDriver(a, employees);
+    const matchesDriver = Boolean(
+      driverId && ((a.employeeIds || []).includes(driverId) || assignedDriver?.id === driverId)
+    );
+    const matchesVehicle = Boolean(vehicleId && a.vehicleId === vehicleId);
+
+    if (driverId) return matchesDriver;
+    return matchesVehicle;
+  });
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    const score = (item: Assignment) => {
+      let sc = 0;
+      const assignedDriver = resolveAssignmentDriver(item, employees);
+      if (driverId && assignedDriver?.id === driverId) sc += 20;
+      if (driverId && (item.employeeIds || []).includes(driverId)) sc += 10;
+      if (item.status === 'Pendiente') sc += 8;
+      if (vehicleId && item.vehicleId === vehicleId) sc += 4;
+      return sc;
+    };
+    const diff = score(b) - score(a);
+    if (diff !== 0) return diff;
+    return (b.date || '').localeCompare(a.date || '');
+  });
+
+  return candidates[0];
+}
+
+export function formatFirestoreRuleError(err: unknown, fallbackMessage: string): string {
+  const raw = err instanceof Error ? err.message : String(err || '');
+  let detail = raw;
+  if (raw.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.error) detail = String(parsed.error);
+    } catch {
+      // ignore JSON parse errors
+    }
+  }
+  const lower = detail.toLowerCase();
+  if (
+    lower.includes('permission-denied') ||
+    lower.includes('missing or insufficient permissions')
+  ) {
+    return 'Validación de Firestore: la ruta requiere exactamente 1 Conductor, máximo 3 Auxiliares sin duplicados, y una ruta/vehículo operativos existentes.';
+  }
+  return detail || fallbackMessage;
+}
+
+

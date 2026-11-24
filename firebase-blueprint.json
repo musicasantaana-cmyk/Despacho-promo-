@@ -58,28 +58,37 @@
     },
     "Assignment": {
       "title": "Assignment",
-      "description": "A scheduled route for a vehicle and crew.",
+      "description": "A scheduled route for an existing operational vehicle and crew (strictly 1 Conductor at index 0 and max 3 Auxiliaries).",
       "type": "object",
       "properties": {
-        "routeId": { "type": "string", "maxLength": 128 },
-        "vehicleId": { "type": "string", "maxLength": 128 },
-        "employeeIds": { "type": "array" },
+        "routeId": { "type": "string", "maxLength": 128, "description": "Reference ID to an existing RouteDef document." },
+        "vehicleId": { "type": "string", "maxLength": 128, "description": "Reference ID to an existing operational Vehicle document." },
+        "employeeIds": { "type": "array", "description": "Ordered crew IDs (min 1, max 4): index 0 must be 1 Conductor, indices 1..3 up to 3 unique Auxiliaries (Ayudante/Coordinador)." },
         "date": { "type": "string", "maxLength": 50 },
         "status": { "type": "string", "enum": ["Pendiente", "Salida de Base", "Inicio de Ruta", "Fin de Ruta", "Relleno", "Base", "Cancelado"] },
         "incidents": { "type": "array" },
-        "workGroupId": { "type": "string", "maxLength": 128 }
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "weightTons": { "type": "number" },
+        "statusHistory": { "type": "array" },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "salidaBaseAt": { "type": "string", "maxLength": 50 },
+        "inicioRutaAt": { "type": "string", "maxLength": 50 },
+        "finRutaAt": { "type": "string", "maxLength": 50 },
+        "llegadaBaseAt": { "type": "string", "maxLength": 50 }
       },
-      "required": ["routeId", "vehicleId", "employeeIds", "date", "status"]
+      "required": ["routeId", "vehicleId", "employeeIds", "date", "status", "incidents"]
     },
     "CrewTemplate": {
       "title": "CrewTemplate",
-      "description": "A predefined crew template.",
+      "description": "A predefined crew template (1 Conductor and maximum 3 distinct Auxiliaries).",
       "type": "object",
       "properties": {
         "name": { "type": "string", "maxLength": 100 },
-        "driverId": { "type": "string", "maxLength": 128 },
-        "assistantIds": { "type": "array" },
-        "workGroupId": { "type": "string", "maxLength": 128 }
+        "driverId": { "type": "string", "maxLength": 128, "description": "Reference ID to an existing Conductor employee." },
+        "assistantIds": { "type": "array", "description": "Unique auxiliary employee IDs (max 3)." },
+        "workGroupId": { "type": "string", "maxLength": 128 },
+        "firstName": { "type": "string", "maxLength": 50 },
+        "lastName": { "type": "string", "maxLength": 50 }
       },
       "required": ["name", "driverId", "assistantIds"]
     },
@@ -156,6 +165,21 @@
       },
       "required": ["date", "workGroupId", "driverId", "driverName", "vehicleNumber", "createdByUserId", "status", "t1StartShiftAt"]
     },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Daily attendance status record for an employee.",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 20 },
+        "status": {
+          "type": "string",
+          "enum": ["OK", "RTM", "AUS", "PNR", "MED", "PRL", "ACC", "INC", "PXC", "FAM", "NDL", "SAN", "VAC", "LCL", "RETIRO", "TRASLADO", "VACANTES"]
+        },
+        "workGroupId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["employeeId", "date", "status"]
+    },
     "BreakdownAuditLog": {
       "title": "BreakdownAuditLog",
       "description": "Audit log of mechanical breakdown alarms and user acknowledgements.",
@@ -215,11 +239,15 @@
     },
     "assignments": {
       "schema": "Assignment",
-      "description": "Stores assignments."
+      "description": "Stores route assignments (1 Conductor + max 3 Auxiliaries)."
     },
     "crews": {
       "schema": "CrewTemplate",
-      "description": "Stores crew templates."
+      "description": "Stores crew templates (1 Conductor + max 3 Auxiliaries)."
+    },
+    "attendances": {
+      "schema": "Attendance",
+      "description": "Stores employee attendance logs."
     },
     "app_users": {
       "schema": "AppUser",

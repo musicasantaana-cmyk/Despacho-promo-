@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Play,
   Flag,
@@ -45,7 +45,13 @@ import {
   computeShiftTimeBreakdown,
   formatMsAsHoursMins,
 } from '../utils/shiftTimeMetrics';
-import { isConductorRole, resolveAssignmentDriver } from '../utils/assignmentRules';
+import {
+  findTodayPredefinedAssignment,
+  getAssignmentCrewBreakdown,
+  isConductorRole,
+  resolveAssignmentDriver,
+  resolveUserConductorEmployee,
+} from '../utils/assignmentRules';
 
 function formatElapsed(ms: number): string {
   const safe = Math.max(0, Math.floor(ms / 1000));
@@ -191,28 +197,37 @@ export const DriverPage: React.FC = () => {
     };
   }, [pdfViewerModal]);
 
-  // Keep selectedGroupId synced with locked group or default group
+  const resolvedUserDriver = useMemo(
+    () => resolveUserConductorEmployee(user, state.employees),
+    [user, state.employees]
+  );
+
+  // Keep selectedGroupId synced with locked group, resolved conductor's group, or default group
   useEffect(() => {
     if (lockedWorkGroupId) {
       setSelectedGroupId(lockedWorkGroupId);
+    } else if (!selectedGroupId && resolvedUserDriver?.workGroupId) {
+      setSelectedGroupId(resolvedUserDriver.workGroupId);
     } else if (!selectedGroupId && state.workGroups.length > 0) {
       setSelectedGroupId(state.activeWorkGroupId || state.workGroups[0].id);
     }
-  }, [lockedWorkGroupId, state.activeWorkGroupId, state.workGroups, selectedGroupId]);
+  }, [lockedWorkGroupId, resolvedUserDriver, state.activeWorkGroupId, state.workGroups, selectedGroupId]);
 
-  // Preselect employeeId if linked to user
+  // Preselect employeeId if linked to user or unambiguously matched in directory
   useEffect(() => {
-    if (user?.employeeId && !selectedDriverId) {
-      setSelectedDriverId(user.employeeId);
+    const targetId = user?.employeeId || resolvedUserDriver?.id || '';
+    if (targetId && !selectedDriverId) {
+      setSelectedDriverId(targetId);
     }
-  }, [user?.employeeId, selectedDriverId]);
+  }, [user?.employeeId, resolvedUserDriver, selectedDriverId]);
 
   // Automatically restore or sync any open (or externally closed) shift for this user from realtime state
   // Prioritize active support shifts or unpaused shifts over paused primary shifts.
   useEffect(() => {
     if (!user || pendingParentShift) return;
+    const effectiveDriverId = user.employeeId || resolvedUserDriver?.id || '';
     const matchingOpen = state.driverShifts.filter(
-      s => s.status !== 'EN_BASE' && (s.createdByUserId === user.id || (user.employeeId && s.driverId === user.employeeId))
+      s => s.status !== 'EN_BASE' && (s.createdByUserId === user.id || (effectiveDriverId && s.driverId === effectiveDriverId))
     );
     const prioritized =
       matchingOpen.find(s => s.isSupportShift && !s.isPausedForSupport) ||
@@ -234,7 +249,7 @@ export const DriverPage: React.FC = () => {
         setCompletedShiftSummary(updatedCurrent);
       }
     }
-  }, [state.driverShifts, user, pendingParentShift, activeShift]);
+  }, [state.driverShifts, user, resolvedUserDriver, pendingParentShift, activeShift]);
 
   // Filtered employees for selected work group
   const groupEmployees = useMemo(() => {
@@ -360,23 +375,56 @@ export const DriverPage: React.FC = () => {
   };
 
   const todayStr = new Date().toLocaleDateString('en-CA');
+  const appliedAssignmentKeyRef = useRef<string | null>(null);
 
-  // Auto-match today's assignment (route + vehicle / driver) when selecting in Step 1
+  const predefinedAssignment = useMemo(() => {
+    const targetDriverId = selectedDriverId || resolvedUserDriver?.id || '';
+    if (!targetDriverId) return null;
+    return findTodayPredefinedAssignment({
+      driverId: targetDriverId,
+      workGroupId: selectedGroupId || undefined,
+      assignments: state.assignments,
+      employees: state.employees,
+      todayStr,
+    });
+  }, [selectedDriverId, resolvedUserDriver, selectedGroupId, state.assignments, state.employees, todayStr]);
+
+  const predefinedCrew = useMemo(() => {
+    if (!predefinedAssignment) return null;
+    return getAssignmentCrewBreakdown(predefinedAssignment.employeeIds || [], state.employees);
+  }, [predefinedAssignment, state.employees]);
+
+  const predefinedVehicle = useMemo(
+    () => (predefinedAssignment ? state.vehicles.find(v => v.id === predefinedAssignment.vehicleId) || null : null),
+    [predefinedAssignment, state.vehicles]
+  );
+
+  const predefinedRoute = useMemo(
+    () => (predefinedAssignment ? state.routes.find(r => r.id === predefinedAssignment.routeId) || null : null),
+    [predefinedAssignment, state.routes]
+  );
+
+  const isPredefinedLockedForConductor =
+    user?.role === 'conductor' &&
+    Boolean(predefinedAssignment) &&
+    Boolean(predefinedVehicle && predefinedVehicle.status === 'Operativo') &&
+    Boolean(predefinedRoute);
+
+  // Auto-match today's assignment when selecting driver or vehicle manually
   const syncSelectionFromTodayAssignment = (nextDriverId: string, nextVehicleId: string) => {
-    if (!selectedGroupId) return;
-    const match = state.assignments.find(a => {
-      if (a.date.slice(0, 10) !== todayStr) return false;
-      if (a.workGroupId && a.workGroupId !== selectedGroupId) return false;
-      if (a.status === 'Cancelado') return false;
-      if (nextVehicleId && a.vehicleId === nextVehicleId) return true;
-      if (nextDriverId && (a.employeeIds || []).includes(nextDriverId)) return true;
-      return false;
+    const match = findTodayPredefinedAssignment({
+      driverId: nextDriverId || undefined,
+      vehicleId: nextVehicleId || undefined,
+      workGroupId: selectedGroupId || undefined,
+      assignments: state.assignments,
+      employees: state.employees,
+      todayStr,
     });
     if (!match) return;
     if (match.routeId && groupRoutes.some(r => r.id === match.routeId)) {
       setSelectedRouteId(match.routeId);
     }
-    if (!nextVehicleId && match.vehicleId && groupVehicles.some(v => v.id === match.vehicleId)) {
+    if (match.vehicleId && groupVehicles.some(v => v.id === match.vehicleId)) {
       setSelectedVehicleId(match.vehicleId);
     }
     if (!nextDriverId) {
@@ -387,12 +435,43 @@ export const DriverPage: React.FC = () => {
     }
   };
 
+  // Automatically prefill group, vehicle, and route when a predefined assignment exists for the driver
   useEffect(() => {
-    if (activeShift || !selectedGroupId) return;
-    if (!selectedDriverId && !selectedVehicleId) return;
-    if (selectedRouteId && selectedVehicleId && selectedDriverId) return;
-    syncSelectionFromTodayAssignment(selectedDriverId, selectedVehicleId);
-  }, [activeShift, selectedGroupId, selectedDriverId, selectedVehicleId, state.assignments, todayStr]);
+    if (activeShift || !predefinedAssignment) return;
+
+    const targetGroupId = lockedWorkGroupId || predefinedAssignment.workGroupId || selectedGroupId;
+    if (!lockedWorkGroupId && predefinedAssignment.workGroupId && selectedGroupId !== predefinedAssignment.workGroupId) {
+      setSelectedGroupId(predefinedAssignment.workGroupId);
+    }
+
+    const matchingVehicle = state.vehicles.find(
+      v => v.id === predefinedAssignment.vehicleId && v.status === 'Operativo' && (!targetGroupId || v.workGroupId === targetGroupId)
+    );
+    const matchingRoute = state.routes.find(
+      r => r.id === predefinedAssignment.routeId && (!targetGroupId || r.workGroupId === targetGroupId)
+    );
+
+    const assignmentKey = `${predefinedAssignment.id}:${selectedDriverId}:${matchingVehicle?.id || ''}:${matchingRoute?.id || ''}`;
+    if (appliedAssignmentKeyRef.current === assignmentKey) return;
+
+    if (matchingVehicle) {
+      setSelectedVehicleId(matchingVehicle.id);
+    }
+    if (matchingRoute) {
+      setSelectedRouteId(matchingRoute.id);
+    }
+    if (matchingVehicle || matchingRoute) {
+      appliedAssignmentKeyRef.current = assignmentKey;
+    }
+  }, [
+    activeShift,
+    predefinedAssignment,
+    selectedDriverId,
+    selectedGroupId,
+    lockedWorkGroupId,
+    state.vehicles,
+    state.routes,
+  ]);
 
   const todayCompletedShifts = useMemo(() => {
     return state.driverShifts.filter(s => s.date === todayStr && s.status === 'EN_BASE');
@@ -1072,9 +1151,64 @@ export const DriverPage: React.FC = () => {
           <div>
             <h3 className="text-lg font-bold text-slate-900">1. Configuración Inicial del Turno</h3>
             <p className="text-sm text-slate-500 mt-0.5">
-              Seleccione su grupo operativo, conductor, vehículo y ruta existente antes de iniciar el turno.
+              {predefinedAssignment
+                ? 'Su asignación programada para hoy ha sido precargada automáticamente. Verifique los datos e inicie el turno.'
+                : 'Seleccione su grupo operativo, conductor, vehículo y ruta existente antes de iniciar el turno.'}
             </p>
           </div>
+
+          {predefinedAssignment && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  Asignación Programada para Hoy (Predefinida)
+                </span>
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-white text-emerald-800 border border-emerald-200">
+                  Estado: {predefinedAssignment.status}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <div className="bg-white/80 rounded-xl p-2.5 border border-emerald-100">
+                  <span className="text-slate-500 font-semibold uppercase block">Conductor</span>
+                  <span className="font-bold text-slate-900 mt-0.5 block">
+                    {predefinedCrew?.driver?.name || selectedDriver?.name || 'Asignado'}
+                  </span>
+                </div>
+                <div className="bg-white/80 rounded-xl p-2.5 border border-emerald-100">
+                  <span className="text-slate-500 font-semibold uppercase block">Vehículo / Móvil</span>
+                  <span className="font-bold text-slate-900 mt-0.5 block">
+                    {predefinedVehicle
+                      ? `Móvil ${predefinedVehicle.internalNumber} · ${predefinedVehicle.plate}`
+                      : 'No encontrado en catálogo'}
+                  </span>
+                </div>
+                <div className="bg-white/80 rounded-xl p-2.5 border border-emerald-100">
+                  <span className="text-slate-500 font-semibold uppercase block">Ruta Asignada</span>
+                  <span className="font-bold text-slate-900 mt-0.5 block">
+                    {predefinedRoute ? `[${predefinedRoute.code}] ${predefinedRoute.name}` : 'No encontrada en catálogo'}
+                  </span>
+                </div>
+              </div>
+              {predefinedCrew && predefinedCrew.assistants.length > 0 && (
+                <div className="text-xs text-emerald-900 font-medium pt-1">
+                  <span className="font-bold">Auxiliares ({predefinedCrew.assistants.length}):</span>{' '}
+                  {predefinedCrew.assistants.map(a => a.name).join(', ')}
+                </div>
+              )}
+              {predefinedVehicle && predefinedVehicle.status !== 'Operativo' && (
+                <div className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                  El vehículo asignado (Móvil {predefinedVehicle.internalNumber}) figura como Inoperativo. Seleccione un móvil operativo disponible abajo.
+                </div>
+              )}
+            </div>
+          )}
+
+          {!predefinedAssignment && selectedDriverId && (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-600">
+              No hay una asignación programada para hoy para este conductor; seleccione un vehículo operativo y ruta existente del catálogo para iniciar.
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* 1. Grupo Operativo */}
@@ -1085,8 +1219,9 @@ export const DriverPage: React.FC = () => {
               </label>
               <select
                 value={selectedGroupId}
-                disabled={Boolean(lockedWorkGroupId)}
+                disabled={Boolean(lockedWorkGroupId) || isPredefinedLockedForConductor}
                 onChange={e => {
+                  appliedAssignmentKeyRef.current = null;
                   setSelectedGroupId(e.target.value);
                   setSelectedDriverId('');
                   setSelectedVehicleId('');
@@ -1110,22 +1245,27 @@ export const DriverPage: React.FC = () => {
                   <UserCheck className="h-4 w-4 text-emerald-600" />
                   Nombre del Conductor
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setShowAllRolesInGroup(v => !v)}
-                  className="text-[11px] font-semibold text-emerald-700 hover:underline"
-                >
-                  {showAllRolesInGroup ? 'Solo conductores' : 'Ver todo el grupo'}
-                </button>
+                {!(user?.role === 'conductor' && resolvedUserDriver) && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllRolesInGroup(v => !v)}
+                    className="text-[11px] font-semibold text-emerald-700 hover:underline"
+                  >
+                    {showAllRolesInGroup ? 'Solo conductores' : 'Ver todo el grupo'}
+                  </button>
+                )}
               </div>
               <select
                 value={selectedDriverId}
                 onChange={e => {
+                  appliedAssignmentKeyRef.current = null;
                   const nextId = e.target.value;
                   setSelectedDriverId(nextId);
-                  syncSelectionFromTodayAssignment(nextId, selectedVehicleId);
+                  setSelectedVehicleId('');
+                  setSelectedRouteId('');
+                  syncSelectionFromTodayAssignment(nextId, '');
                 }}
-                disabled={!selectedGroupId}
+                disabled={!selectedGroupId || (user?.role === 'conductor' && Boolean(resolvedUserDriver))}
                 className="w-full h-12 border border-slate-300 rounded-xl px-3.5 text-base font-semibold text-slate-800 bg-white focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
               >
                 <option value="">Seleccione su nombre...</option>
@@ -1151,7 +1291,7 @@ export const DriverPage: React.FC = () => {
                   setSelectedVehicleId(nextVehId);
                   syncSelectionFromTodayAssignment(selectedDriverId, nextVehId);
                 }}
-                disabled={!selectedGroupId}
+                disabled={!selectedGroupId || isPredefinedLockedForConductor}
                 className="w-full h-12 border border-slate-300 rounded-xl px-3.5 text-base font-bold text-slate-900 bg-white focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
               >
                 <option value="">Seleccione un móvil operativo...</option>
@@ -1176,7 +1316,7 @@ export const DriverPage: React.FC = () => {
                 required
                 value={selectedRouteId}
                 onChange={e => setSelectedRouteId(e.target.value)}
-                disabled={!selectedGroupId}
+                disabled={!selectedGroupId || isPredefinedLockedForConductor}
                 className="w-full h-12 border border-slate-300 rounded-xl px-3.5 text-base font-semibold text-slate-800 bg-white focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
               >
                 <option value="">Seleccione una ruta existente...</option>

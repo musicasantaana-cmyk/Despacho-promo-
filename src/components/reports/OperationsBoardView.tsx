@@ -21,7 +21,7 @@ import {
 import * as XLSX from 'xlsx';
 import { useAppContext } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
-import { Assignment, BreakdownAuditLog, BreakdownEvent, DriverShift, DriverShiftStatus } from '../../types';
+import { Assignment, BreakdownAuditLog, BreakdownEvent, DriverShift, DriverShiftStatus, Employee } from '../../types';
 import {
   acknowledgeBreakdownApi,
   addManualShiftEventApi,
@@ -36,8 +36,13 @@ import {
   RouteAlertLevel,
 } from '../../utils/shiftTimeMetrics';
 import {
+  MAX_AUXILIARIES_PER_ROUTE,
   findMatchingAssignmentForShift,
+  formatFirestoreRuleError,
+  getAssignmentCrewBreakdown,
+  isConductorRole,
   resolveAssignmentDriver,
+  validateAssignmentSelection,
 } from '../../utils/assignmentRules';
 
 interface SupportVehicleEntry {
@@ -65,6 +70,10 @@ interface BoardCardItem {
   groupName: string;
   status: DriverShiftStatus;
   driverName: string;
+  assistants: Employee[];
+  assistantsCount: number;
+  crewHasAnomaly: boolean;
+  linkedAssignment?: Assignment;
   isPausedForRefill: boolean;
   isInBreakdown: boolean;
   isSupportShift: boolean;
@@ -200,9 +209,14 @@ export const OperationsBoardView: React.FC = () => {
   const [resolveBusyId, setResolveBusyId] = useState<string | null>(null);
   const [resolveError, setResolveError] = useState('');
 
-  // Controller / Supervisor Time Editing & Manual Novelty Forms inside Card Modal
-  const [boardModalTab, setBoardModalTab] = useState<'none' | 'edit-times' | 'add-event'>('none');
+  // Controller / Supervisor Time Editing, Crew Editing & Manual Novelty Forms inside Card Modal
+  const [boardModalTab, setBoardModalTab] = useState<'none' | 'edit-times' | 'add-event' | 'edit-crew'>('none');
   const [editTargetShiftId, setEditTargetShiftId] = useState<string>('');
+  const [editCrewVehicleId, setEditCrewVehicleId] = useState<string>('');
+  const [editCrewDriverId, setEditCrewDriverId] = useState<string>('');
+  const [editCrewAssistantIds, setEditCrewAssistantIds] = useState<string[]>([]);
+  const [editCrewBusy, setEditCrewBusy] = useState(false);
+  const [editCrewError, setEditCrewError] = useState('');
   const [editT1, setEditT1] = useState('');
   const [editT2, setEditT2] = useState('');
   const [editT3, setEditT3] = useState('');
@@ -286,10 +300,20 @@ export const OperationsBoardView: React.FC = () => {
       const group = state.workGroups.find(wg => wg.id === shift.workGroupId);
       const groupName = shift.workGroupName || group?.name || 'Grupo';
       const routeInfo = resolveRouteForShift(shift);
+      const linkedAssignment = findMatchingAssignmentForShift(shift, state.assignments, state.vehicles) || undefined;
+      const crew = linkedAssignment
+        ? getAssignmentCrewBreakdown(linkedAssignment.employeeIds || [], state.employees)
+        : null;
       const catalogDriver = shift.driverId
         ? state.employees.find(e => e.id === shift.driverId)
-        : undefined;
+        : crew?.driver || undefined;
       const driverName = catalogDriver?.name || shift.driverName || 'Conductor';
+      const assistants = crew ? crew.assistants.slice(0, MAX_AUXILIARIES_PER_ROUTE) : [];
+      const crewHasAnomaly = Boolean(
+        linkedAssignment &&
+          crew &&
+          (crew.drivers.length !== 1 || crew.assistants.length > MAX_AUXILIARIES_PER_ROUTE)
+      );
       const hasUnacknowledgedAlarm = (shift.breakdownEvents || []).some(ev => !ev.acknowledgedAt);
       const breakdown = computeShiftTimeBreakdown(shift, nowMs);
 
@@ -308,6 +332,10 @@ export const OperationsBoardView: React.FC = () => {
         groupName,
         status: shift.status,
         driverName,
+        assistants,
+        assistantsCount: assistants.length,
+        crewHasAnomaly,
+        linkedAssignment,
         isPausedForRefill: shift.isPausedForRefill,
         isInBreakdown: shift.isInBreakdown,
         isSupportShift: false,
@@ -335,7 +363,11 @@ export const OperationsBoardView: React.FC = () => {
       const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
       const vehicleNumber = vehicle?.internalNumber || vehicle?.plate || 'N/A';
       const groupId = a.workGroupId || vehicle?.workGroupId || '';
-      const driver = resolveAssignmentDriver(a, state.employees);
+      const crew = getAssignmentCrewBreakdown(a.employeeIds || [], state.employees);
+      const driver = crew.driver;
+      const assistants = crew.assistants.slice(0, MAX_AUXILIARIES_PER_ROUTE);
+      const crewHasAnomaly =
+        crew.drivers.length !== 1 || crew.assistants.length > MAX_AUXILIARIES_PER_ROUTE;
       const dedupKey = `${groupId}::${vehicleNumber.trim().toLowerCase()}`;
       if (
         seenGroupVehicleKeys.has(dedupKey) ||
@@ -369,6 +401,10 @@ export const OperationsBoardView: React.FC = () => {
         groupName: group?.name || 'Grupo',
         status: mappedStatus,
         driverName: driver?.name || 'Sin Conductor',
+        assistants,
+        assistantsCount: assistants.length,
+        crewHasAnomaly,
+        linkedAssignment: a,
         isPausedForRefill: a.status === 'Relleno',
         isInBreakdown: false,
         isSupportShift: false,
@@ -450,6 +486,9 @@ export const OperationsBoardView: React.FC = () => {
           groupName: targetGroupName,
           status: shift.status,
           driverName: shift.driverName,
+          assistants: [],
+          assistantsCount: 0,
+          crewHasAnomaly: false,
           isPausedForRefill: shift.isPausedForRefill,
           isInBreakdown: shift.isInBreakdown,
           isSupportShift: true,
@@ -594,6 +633,7 @@ export const OperationsBoardView: React.FC = () => {
     setEditError('');
     setEditSuccessMsg('');
     setManualError('');
+    setEditCrewError('');
     setSelectedCard(card);
     if (card.shift) {
       loadEditFieldsFromShift(card.shift);
@@ -609,6 +649,77 @@ export const OperationsBoardView: React.FC = () => {
       setEditT3(toLocalDateTimeInput(a.finRutaAt || hMap['Fin de Ruta']));
       setEditT4(toLocalDateTimeInput(a.llegadaBaseAt || hMap['Base']));
       setEditWeight(a.weightTons !== undefined ? String(a.weightTons) : '');
+    }
+  };
+
+  const openEditCrewTab = () => {
+    if (!liveSelectedCard) return;
+    const targetAsig = liveSelectedCard.linkedAssignment || liveSelectedCard.assignment;
+    if (!targetAsig) return;
+    setEditCrewError('');
+    setEditError('');
+    setManualError('');
+    setEditSuccessMsg('');
+    const breakdown = getAssignmentCrewBreakdown(targetAsig.employeeIds || [], state.employees);
+    setEditCrewVehicleId(targetAsig.vehicleId || '');
+    setEditCrewDriverId(breakdown.driver?.id || '');
+    setEditCrewAssistantIds(breakdown.assistants.map(a => a.id).slice(0, MAX_AUXILIARIES_PER_ROUTE));
+    setBoardModalTab(prev => (prev === 'edit-crew' ? 'none' : 'edit-crew'));
+  };
+
+  const toggleEditCrewAssistant = (id: string) => {
+    setEditCrewError('');
+    setEditCrewAssistantIds(prev => {
+      if (prev.includes(id)) return prev.filter(item => item !== id);
+      if (prev.length >= MAX_AUXILIARIES_PER_ROUTE) {
+        setEditCrewError(`Solo se permiten máximo ${MAX_AUXILIARIES_PER_ROUTE} auxiliares por ruta.`);
+        return prev;
+      }
+      return [...prev, id];
+    });
+  };
+
+  const handleSaveEditedCrew = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!liveSelectedCard || editCrewBusy) return;
+    const targetAsig = liveSelectedCard.linkedAssignment || liveSelectedCard.assignment;
+    if (!targetAsig) return;
+    setEditCrewError('');
+    setEditSuccessMsg('');
+
+    const combinedEmployeeIds = [
+      ...(editCrewDriverId ? [editCrewDriverId] : []),
+      ...editCrewAssistantIds.filter(id => id && id !== editCrewDriverId),
+    ];
+
+    const check = validateAssignmentSelection({
+      routeId: targetAsig.routeId,
+      vehicleId: editCrewVehicleId,
+      employeeIds: combinedEmployeeIds,
+      routes: state.routes,
+      vehicles: state.vehicles,
+      employees: state.employees,
+      requireOperationalVehicle: editCrewVehicleId !== targetAsig.vehicleId,
+    });
+    if (!check.ok || !check.normalizedEmployeeIds) {
+      setEditCrewError(check.error || 'La tripulación debe tener exactamente 1 Conductor y máximo 3 Auxiliares.');
+      return;
+    }
+
+    setEditCrewBusy(true);
+    try {
+      await updateAssignmentResources(targetAsig.id, {
+        vehicleId: editCrewVehicleId,
+        employeeIds: check.normalizedEmployeeIds,
+      });
+      setEditSuccessMsg('Móvil y tripulación actualizados en Firestore (1 Conductor · máx. 3 Auxiliares).');
+      setBoardModalTab('none');
+    } catch (err: any) {
+      setEditCrewError(
+        formatFirestoreRuleError(err, 'No se pudo actualizar la tripulación de la ruta.')
+      );
+    } finally {
+      setEditCrewBusy(false);
     }
   };
 
@@ -1382,6 +1493,10 @@ export const OperationsBoardView: React.FC = () => {
                                     type="button"
                                     onClick={() => openCardDetail(card)}
                                     title={`Conductor: ${card.driverName} · ${card.routeCode !== 'S/R' ? `Ruta ${card.routeCode}` : 'Sin ruta'} · Móvil ${card.vehicleNumber} · ${card.groupName}${
+                                      card.linkedAssignment
+                                        ? ` · Tripulación: 1 Cond. + ${card.assistantsCount}/${MAX_AUXILIARIES_PER_ROUTE} aux.`
+                                        : ''
+                                    }${
                                       card.isPausedForSupport
                                         ? ' · PAUSADA POR APOYO'
                                         : card.isSupportShift
@@ -1423,6 +1538,11 @@ export const OperationsBoardView: React.FC = () => {
                                         {card.driverName}
                                       </span>
                                       <span className="flex items-center gap-0.5 shrink-0">
+                                        {card.crewHasAnomaly && (
+                                          <span className="text-[8px] font-extrabold font-mono text-rose-700 leading-none">
+                                            Lím!
+                                          </span>
+                                        )}
                                         {card.routeAlertLevel === 'critical' && (
                                           <span className="text-[8px] font-extrabold font-mono text-rose-700 leading-none">
                                             10h!
@@ -1463,8 +1583,8 @@ export const OperationsBoardView: React.FC = () => {
                                         : card.supportingVehicles.length > 0
                                           ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber} +${card.supportingVehicles.length}`
                                           : card.isPendingAssignment
-                                            ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber} · Asig.`
-                                            : `${card.isSupportShift ? 'Apoyo ' : ''}${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber}`}
+                                            ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber}${card.assistantsCount > 0 ? ` · ${card.assistantsCount}/3 aux` : ''} · Asig.`
+                                            : `${card.isSupportShift ? 'Apoyo ' : ''}${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber}${card.assistantsCount > 0 ? ` · ${card.assistantsCount}/3 aux` : ''}`}
                                     </div>
                                   </button>
                                 );
@@ -1596,6 +1716,39 @@ export const OperationsBoardView: React.FC = () => {
                   <span className="font-mono font-bold text-slate-900 truncate block">M.{liveSelectedCard.vehicleNumber}</span>
                 </div>
               </div>
+
+              {(liveSelectedCard.linkedAssignment || liveSelectedCard.assignment) && (
+                <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3 space-y-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-emerald-900 uppercase tracking-wide text-[11px]">
+                      Tripulación Asignada (1 Conductor · Máx. 3 Auxiliares)
+                    </span>
+                    <span className="font-mono font-bold text-[11px] text-emerald-800">
+                      1 Cond. · {liveSelectedCard.assistantsCount}/{MAX_AUXILIARIES_PER_ROUTE} Aux.
+                    </span>
+                  </div>
+                  {liveSelectedCard.assistants.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {liveSelectedCard.assistants.map(aux => (
+                        <span
+                          key={aux.id}
+                          className="bg-white border border-emerald-200 text-slate-800 px-2 py-0.5 rounded-md font-semibold text-[11px]"
+                        >
+                          {aux.name} ({aux.role})
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-600">Sin auxiliares asignados (0/{MAX_AUXILIARIES_PER_ROUTE}).</p>
+                  )}
+                  {liveSelectedCard.crewHasAnomaly && (
+                    <p className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1">
+                      Atención: esta asignación heredada excede o no cumple el límite (1 Conductor + máx. 3 Auxiliares).
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="flex justify-between">
                 <span className="text-slate-500">Estado Actual:</span>
                 <span className="font-bold text-slate-900">
@@ -1727,10 +1880,10 @@ export const OperationsBoardView: React.FC = () => {
                 </p>
               )}
 
-              {/* Controller / Supervisor Console Controls: Edit Times & Add Breakdown/Refill */}
+              {/* Controller / Supervisor Console Controls: Edit Times, Edit Crew (1+3) & Add Breakdown/Refill */}
               {canEditBoard && (!lockedWorkGroupId || liveSelectedCard.groupId === lockedWorkGroupId) && (
                 <div className="pt-2 border-t border-slate-100 space-y-2.5">
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className={`grid gap-2 ${(liveSelectedCard.linkedAssignment || liveSelectedCard.assignment) ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-2'}`}>
                     <button
                       type="button"
                       onClick={openEditTimesTab}
@@ -1743,6 +1896,20 @@ export const OperationsBoardView: React.FC = () => {
                       <Edit3 className="h-3.5 w-3.5" />
                       Modificar Tiempos
                     </button>
+                    {(liveSelectedCard.linkedAssignment || liveSelectedCard.assignment) && (
+                      <button
+                        type="button"
+                        onClick={openEditCrewTab}
+                        className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 transition-colors ${
+                          boardModalTab === 'edit-crew'
+                            ? 'bg-emerald-700 text-white border-emerald-700'
+                            : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
+                        }`}
+                      >
+                        <Truck className="h-3.5 w-3.5" />
+                        Móvil / Tripulación
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={openManualEventTab}
@@ -1753,7 +1920,7 @@ export const OperationsBoardView: React.FC = () => {
                       }`}
                     >
                       <PlusCircle className="h-3.5 w-3.5" />
-                      Agregar Avería / Relleno
+                      Avería / Relleno
                     </button>
                   </div>
 
@@ -1763,6 +1930,142 @@ export const OperationsBoardView: React.FC = () => {
                       <span>{editSuccessMsg}</span>
                     </div>
                   )}
+
+                  {boardModalTab === 'edit-crew' && (liveSelectedCard.linkedAssignment || liveSelectedCard.assignment) && (() => {
+                    const targetAsig = (liveSelectedCard.linkedAssignment || liveSelectedCard.assignment)!;
+                    const groupVehicles = state.vehicles.filter(
+                      v => (!targetAsig.workGroupId || v.workGroupId === targetAsig.workGroupId) &&
+                           (v.status === 'Operativo' || v.id === targetAsig.vehicleId)
+                    );
+                    const groupEmployees = state.employees.filter(
+                      e => !targetAsig.workGroupId || e.workGroupId === targetAsig.workGroupId
+                    );
+                    const groupDrivers = groupEmployees.filter(e => isConductorRole(e.role));
+                    const groupAuxiliaries = groupEmployees.filter(e => !isConductorRole(e.role));
+
+                    return (
+                      <form
+                        onSubmit={handleSaveEditedCrew}
+                        className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3.5 space-y-3 text-xs"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-emerald-950 uppercase tracking-wide">
+                            Editar Móvil y Tripulación (1 Cond. + Máx. 3 Aux.)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setBoardModalTab('none')}
+                            className="text-slate-500 hover:text-slate-800 font-semibold"
+                          >
+                            Cerrar
+                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                            Vehículo Operativo *
+                          </label>
+                          <select
+                            required
+                            value={editCrewVehicleId}
+                            onChange={e => setEditCrewVehicleId(e.target.value)}
+                            className="w-full border border-slate-300 bg-white rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-900"
+                          >
+                            <option value="">Seleccione un móvil operativo...</option>
+                            {groupVehicles.map(v => (
+                              <option key={v.id} value={v.id}>
+                                Móvil {v.internalNumber} · {v.plate} {v.status !== 'Operativo' ? `(${v.status})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                            Conductor Asignado (Obligatorio · 1 por ruta) *
+                          </label>
+                          <select
+                            required
+                            value={editCrewDriverId}
+                            onChange={e => setEditCrewDriverId(e.target.value)}
+                            className="w-full border border-slate-300 bg-white rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-900"
+                          >
+                            <option value="">Seleccione un conductor...</option>
+                            {groupDrivers.map(d => (
+                              <option key={d.id} value={d.id}>
+                                {d.name} ({d.role})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-bold text-slate-700">
+                              Auxiliares de Ruta (Máximo {MAX_AUXILIARIES_PER_ROUTE})
+                            </label>
+                            <span className="font-mono font-bold text-[11px] text-emerald-800">
+                              {editCrewAssistantIds.length}/{MAX_AUXILIARIES_PER_ROUTE}
+                            </span>
+                          </div>
+                          <div className="max-h-36 overflow-y-auto bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+                            {groupAuxiliaries.length === 0 ? (
+                              <p className="p-2 text-slate-400 text-[11px]">No hay auxiliares registrados en este grupo.</p>
+                            ) : (
+                              groupAuxiliaries.map(aux => {
+                                const checked = editCrewAssistantIds.includes(aux.id);
+                                const atLimit = !checked && editCrewAssistantIds.length >= MAX_AUXILIARIES_PER_ROUTE;
+                                return (
+                                  <label
+                                    key={aux.id}
+                                    className={`flex items-center justify-between px-2.5 py-1.5 text-xs ${
+                                      atLimit ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    <span className="flex items-center gap-2 min-w-0">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        disabled={atLimit}
+                                        onChange={() => toggleEditCrewAssistant(aux.id)}
+                                        className="rounded border-slate-300 text-emerald-600"
+                                      />
+                                      <span className="font-semibold text-slate-800 truncate">{aux.name}</span>
+                                    </span>
+                                    <span className="text-[10px] text-slate-500 shrink-0 ml-2">{aux.role}</span>
+                                  </label>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+
+                        {editCrewError && (
+                          <div className="text-[11px] font-semibold text-rose-700 bg-rose-100 border border-rose-300 rounded-lg px-2.5 py-1.5">
+                            {editCrewError}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setBoardModalTab('none')}
+                            className="min-h-[38px] bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-xl font-bold"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={editCrewBusy}
+                            className="min-h-[38px] bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-bold flex items-center justify-center gap-1.5"
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                            {editCrewBusy ? 'Guardando...' : 'Guardar Tripulación'}
+                          </button>
+                        </div>
+                      </form>
+                    );
+                  })()}
 
                   {boardModalTab === 'edit-times' && (
                     <form

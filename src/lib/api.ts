@@ -125,6 +125,13 @@ async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
     credentials: 'include',
   });
 
+  if (res.status === 405) {
+    cachedHealthResult = false;
+    throw new Error(
+      'Error 405: El servidor actual es estático (sin backend Express). Recargue la aplicación para operar directamente contra Firestore.'
+    );
+  }
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data.error || `Error ${res.status}`);

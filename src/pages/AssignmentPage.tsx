@@ -5,6 +5,7 @@ import { Calendar, Map as MapIcon, CheckCircle, Users, Truck, Trash2 } from 'luc
 import { QRCodeSVG } from 'qrcode.react';
 import {
   MAX_AUXILIARIES_PER_ROUTE,
+  formatFirestoreRuleError,
   isConductorRole,
   validateAssignmentSelection,
   validateCrewSelection,
@@ -247,7 +248,9 @@ export const AssignmentPage: React.FC = () => {
       setSelectedAssistantIds([]);
       setSelectedCrewId('');
     } catch (err: any) {
-      setAssignError(err?.message || 'Error al guardar la asignación. Intente nuevamente.');
+      setAssignError(
+        formatFirestoreRuleError(err, 'Error al guardar la asignación. Intente nuevamente.')
+      );
     } finally {
       setAssignSaving(false);
     }
@@ -279,7 +282,7 @@ export const AssignmentPage: React.FC = () => {
       setCrewDriverId('');
       setCrewAssistantIds([]);
     } catch (err: any) {
-      setCrewError(err?.message || 'Error al guardar la tripulación.');
+      setCrewError(formatFirestoreRuleError(err, 'Error al guardar la tripulación.'));
     } finally {
       setCrewSaving(false);
     }

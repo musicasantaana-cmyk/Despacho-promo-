@@ -11,5 +11,12 @@ export const DIRTY_DOZEN_CASES = [
   { name: 'DriverShift unbounded breakdownEvents', payload: { breakdownEvents: new Array(51).fill({}) }, expectRejected: true },
   { name: 'DriverShift missing t1StartShiftAt', payload: { status: 'EN_TURNO' }, expectRejected: true },
   { name: 'Skip T2 -> T3 transition', endpoint: '/api/driver-shifts/:id/end-route', expectStatus: 409 },
-  { name: 'Supervisor cross-group query', endpoint: '/api/driver-shifts?workGroupId=other', expectStatus: 403 }
+  { name: 'Supervisor cross-group query', endpoint: '/api/driver-shifts?workGroupId=other', expectStatus: 403 },
+  { name: 'Assignment with 0 employees', collection: 'assignments', payload: { employeeIds: [] }, expectRejected: true },
+  { name: 'Assignment with 5 employees (1 conductor + 4 auxiliaries)', collection: 'assignments', payload: { employeeIds: ['drv1', 'aux1', 'aux2', 'aux3', 'aux4'] }, expectRejected: true },
+  { name: 'Assignment with 2 conductors', collection: 'assignments', payload: { employeeIds: ['drv1', 'drv2'] }, expectRejected: true },
+  { name: 'Assignment with duplicate auxiliary IDs', collection: 'assignments', payload: { employeeIds: ['drv1', 'aux1', 'aux1'] }, expectRejected: true },
+  { name: 'Assignment with non-existent route or Inoperativo vehicle', collection: 'assignments', payload: { routeId: 'missing', vehicleId: 'inop1', employeeIds: ['drv1'] }, expectRejected: true },
+  { name: 'CrewTemplate with 4 auxiliaries', collection: 'crews', payload: { name: 'C1', driverId: 'drv1', assistantIds: ['aux1', 'aux2', 'aux3', 'aux4'] }, expectRejected: true },
 ];
+

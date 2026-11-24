@@ -55,12 +55,54 @@ service cloud.firestore {
              data.get('dischargeSheetPdfName', '') is string && data.get('dischargeSheetPdfName', '').size() <= 150;
     }
 
+    function isExistingConductor(empId) {
+      return isValidId(empId) &&
+             exists(/databases/$(database)/documents/employees/$(empId)) &&
+             get(/databases/$(database)/documents/employees/$(empId)).data.role == 'Conductor';
+    }
+
+    function isExistingAuxiliary(empId) {
+      return isValidId(empId) &&
+             exists(/databases/$(database)/documents/employees/$(empId)) &&
+             get(/databases/$(database)/documents/employees/$(empId)).data.role in ['Ayudante', 'Coordinador'];
+    }
+
+    function isValidAssignmentCrewRefs(empIds) {
+      return empIds is list &&
+             empIds.size() >= 1 &&
+             empIds.size() <= 4 &&
+             isExistingConductor(empIds[0]) &&
+             (empIds.size() < 2 || (isExistingAuxiliary(empIds[1]) && empIds[1] != empIds[0])) &&
+             (empIds.size() < 3 || (isExistingAuxiliary(empIds[2]) && empIds[2] != empIds[0] && empIds[2] != empIds[1])) &&
+             (empIds.size() < 4 || (isExistingAuxiliary(empIds[3]) && empIds[3] != empIds[0] && empIds[3] != empIds[1] && empIds[3] != empIds[2]));
+    }
+
+    function isValidAssignmentRouteAndVehicleRefs(data, requireOperationalVehicle) {
+      return isValidId(data.routeId) &&
+             exists(/databases/$(database)/documents/routes/$(data.routeId)) &&
+             isValidId(data.vehicleId) &&
+             exists(/databases/$(database)/documents/vehicles/$(data.vehicleId)) &&
+             (!requireOperationalVehicle ||
+              get(/databases/$(database)/documents/vehicles/$(data.vehicleId)).data.status == 'Operativo');
+    }
+
+    function isValidCrewRefs(driverId, assistantIds) {
+      return isExistingConductor(driverId) &&
+             assistantIds is list &&
+             assistantIds.size() <= 3 &&
+             (assistantIds.size() < 1 || (isExistingAuxiliary(assistantIds[0]) && assistantIds[0] != driverId)) &&
+             (assistantIds.size() < 2 || (isExistingAuxiliary(assistantIds[1]) && assistantIds[1] != driverId && assistantIds[1] != assistantIds[0])) &&
+             (assistantIds.size() < 3 || (isExistingAuxiliary(assistantIds[2]) && assistantIds[2] != driverId && assistantIds[2] != assistantIds[0] && assistantIds[2] != assistantIds[1]));
+    }
+
     function isValidAssignment(data) {
-      return data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
-             data.routeId is string && data.routeId.size() <= 128 &&
-             data.vehicleId is string && data.vehicleId.size() <= 128 &&
-             data.employeeIds is list && data.employeeIds.size() <= 10 &&
-             data.date is string && data.date.size() <= 50 &&
+      return data.keys().hasAll(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents']) &&
+             data.keys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
+             data.routeId is string && data.routeId.size() >= 1 && data.routeId.size() <= 128 &&
+             data.vehicleId is string && data.vehicleId.size() >= 1 && data.vehicleId.size() <= 128 &&
+             data.employeeIds is list && data.employeeIds.size() >= 1 && data.employeeIds.size() <= 4 &&
+             data.employeeIds[0] is string && data.employeeIds[0].size() >= 1 && data.employeeIds[0].size() <= 128 &&
+             data.date is string && data.date.size() >= 1 && data.date.size() <= 50 &&
              data.status in ['Pendiente', 'Salida de Base', 'Inicio de Ruta', 'Fin de Ruta', 'Relleno', 'Base', 'Cancelado'] &&
              data.incidents is list && data.incidents.size() <= 50 &&
              data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
@@ -68,10 +110,12 @@ service cloud.firestore {
     }
 
     function isValidCrew(data) {
-      return data.keys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']) &&
-             data.name is string && data.name.size() <= 100 &&
-             data.driverId is string && data.driverId.size() <= 128 &&
-             data.assistantIds is list && data.assistantIds.size() <= 5 &&
+      return data.keys().hasAll(['name', 'driverId', 'assistantIds']) &&
+             data.keys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.driverId is string && data.driverId.size() >= 1 && data.driverId.size() <= 128 &&
+             data.assistantIds is list && data.assistantIds.size() <= 3 &&
+             (data.assistantIds.size() == 0 || (data.assistantIds[0] is string && data.assistantIds[0].size() >= 1 && data.assistantIds[0].size() <= 128)) &&
              data.get('workGroupId', '') is string && data.get('workGroupId', '').size() <= 128 &&
              data.get('firstName', '') is string && data.get('firstName', '').size() <= 50 &&
              data.get('lastName', '') is string && data.get('lastName', '').size() <= 50;
@@ -207,14 +251,28 @@ service cloud.firestore {
     }
     match /assignments/{id} {
       allow read: if true;
-      allow create: if isValidId(id) && isValidAssignment(incoming());
-      allow update: if isValidId(id) && isValidAssignment(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']);
+      allow create: if isValidId(id) &&
+                       isValidAssignment(incoming()) &&
+                       isValidAssignmentCrewRefs(incoming().employeeIds) &&
+                       isValidAssignmentRouteAndVehicleRefs(incoming(), true);
+      allow update: if isValidId(id) &&
+                       isValidAssignment(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['routeId', 'vehicleId', 'employeeIds', 'date', 'status', 'incidents', 'workGroupId', 'weightTons', 'statusHistory', 'createdAt', 'salidaBaseAt', 'inicioRutaAt', 'finRutaAt', 'llegadaBaseAt']) &&
+                       (incoming().employeeIds == existing().employeeIds || isValidAssignmentCrewRefs(incoming().employeeIds)) &&
+                       ((incoming().routeId == existing().routeId && incoming().vehicleId == existing().vehicleId) ||
+                        isValidAssignmentRouteAndVehicleRefs(incoming(), incoming().vehicleId != existing().vehicleId));
       allow delete: if isValidId(id);
     }
     match /crews/{id} {
       allow read: if true;
-      allow create: if isValidId(id) && isValidCrew(incoming());
-      allow update: if isValidId(id) && isValidCrew(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']);
+      allow create: if isValidId(id) &&
+                       isValidCrew(incoming()) &&
+                       isValidCrewRefs(incoming().driverId, incoming().assistantIds);
+      allow update: if isValidId(id) &&
+                       isValidCrew(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'driverId', 'assistantIds', 'workGroupId', 'firstName', 'lastName']) &&
+                       ((incoming().driverId == existing().driverId && incoming().assistantIds == existing().assistantIds) ||
+                        isValidCrewRefs(incoming().driverId, incoming().assistantIds));
       allow delete: if isValidId(id);
     }
     match /app_users/{id} {

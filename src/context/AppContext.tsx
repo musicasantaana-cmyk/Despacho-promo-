@@ -30,6 +30,7 @@ import {
 } from '../lib/api';
 import {
   findLinkedDriverShiftForAssignment,
+  resolveUserConductorEmployee,
   validateAssignmentSelection,
   validateCrewSelection,
 } from '../utils/assignmentRules';
@@ -175,14 +176,147 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return job;
   }, [user, lockedWorkGroupId]);
 
-  // Unified subscription: SSE + /api/sync/state when backendMode === true; direct client Firestore otherwise
+  // Unified real-time subscription: direct Firestore onSnapshot listeners whenever Firebase is configured
   useEffect(() => {
     if (!user) {
       setSyncStatus(prev => ({ ...prev, isOnline: false }));
       return;
     }
 
-    if (backendMode === null) return;
+    if (isFirebaseConfigured && db) {
+      setSyncStatus(prev => ({ ...prev, isOnline: true, syncProtocol: 'Firestore Realtime' }));
+
+      const logSnapshotError = (err: unknown, path: string) => {
+        try {
+          handleFirestoreError(err, OperationType.LIST, path);
+        } catch {
+          // handleFirestoreError already logs structured FirestoreErrorInfo
+        }
+        setSyncStatus(prev => ({ ...prev, isOnline: false }));
+      };
+
+      const unsubWorkGroups = onSnapshot(
+        collection(db, 'workGroups'),
+        snap => {
+          const docs = snap.docs.map(d => ({ ...d.data(), id: d.id } as WorkGroup));
+          setRawState(prev => {
+            let nextActive = lockedWorkGroupId || prev.activeWorkGroupId;
+            if (!nextActive && docs.length > 0) nextActive = docs[0].id;
+            if (nextActive && !docs.find(g => g.id === nextActive)) {
+              nextActive = lockedWorkGroupId || (docs.length > 0 ? docs[0].id : null);
+            }
+            if (nextActive) localStorage.setItem('PROMO_ACTIVE_GROUP', nextActive);
+            return { ...prev, workGroups: docs, activeWorkGroupId: nextActive };
+          });
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'workGroups')
+      );
+
+      const unsubEmployees = onSnapshot(
+        collection(db, 'employees'),
+        snap => {
+          setRawState(prev => ({ ...prev, employees: snap.docs.map(d => ({ ...d.data(), id: d.id } as Employee)) }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'employees')
+      );
+
+      const unsubVehicles = onSnapshot(
+        collection(db, 'vehicles'),
+        snap => {
+          setRawState(prev => ({ ...prev, vehicles: snap.docs.map(d => ({ ...d.data(), id: d.id } as Vehicle)) }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'vehicles')
+      );
+
+      const unsubRoutes = onSnapshot(
+        collection(db, 'routes'),
+        snap => {
+          setRawState(prev => ({ ...prev, routes: snap.docs.map(d => ({ ...d.data(), id: d.id } as RouteDef)) }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'routes')
+      );
+
+      const unsubAssignments = onSnapshot(
+        collection(db, 'assignments'),
+        snap => {
+          setRawState(prev => ({
+            ...prev,
+            assignments: snap.docs.map(d => {
+              const data = d.data();
+              let finalData = { ...data, id: d.id } as Assignment;
+              const metaIncident = finalData.incidents?.find(i => i.id === 'SYS_META');
+              if (metaIncident) {
+                try {
+                  const meta = JSON.parse(metaIncident.description);
+                  finalData = { ...finalData, ...meta, incidents: finalData.incidents.filter(i => i.id !== 'SYS_META') };
+                } catch {}
+              }
+              return finalData;
+            }),
+          }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'assignments')
+      );
+
+      const unsubCrews = onSnapshot(
+        collection(db, 'crews'),
+        snap => {
+          setRawState(prev => ({ ...prev, crews: snap.docs.map(d => ({ ...d.data(), id: d.id } as CrewTemplate)) }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'crews')
+      );
+
+      const unsubAttendances = onSnapshot(
+        collection(db, 'attendances'),
+        snap => {
+          setRawState(prev => ({ ...prev, attendances: snap.docs.map(d => ({ ...d.data(), id: d.id } as Attendance)) }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'attendances')
+      );
+
+      const unsubDriverShifts = onSnapshot(
+        collection(db, 'driver_shifts'),
+        snap => {
+          const docs = snap.docs
+            .map(d => ({ ...d.data(), id: d.id } as DriverShift))
+            .sort((a, b) => (b.t1StartShiftAt || '').localeCompare(a.t1StartShiftAt || ''));
+          setRawState(prev => ({ ...prev, driverShifts: docs }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'driver_shifts')
+      );
+
+      const unsubBreakdownAuditLogs = onSnapshot(
+        collection(db, 'breakdown_audit_logs'),
+        snap => {
+          const docs = snap.docs
+            .map(d => ({ ...d.data(), id: d.id } as BreakdownAuditLog))
+            .sort((a, b) => (b.reportedAt || '').localeCompare(a.reportedAt || ''));
+          setRawState(prev => ({ ...prev, breakdownAuditLogs: docs }));
+          setSyncStatus(prev => ({ ...prev, isOnline: true, lastSyncTime: new Date().toLocaleTimeString() }));
+        },
+        err => logSnapshotError(err, 'breakdown_audit_logs')
+      );
+
+      return () => {
+        unsubWorkGroups();
+        unsubEmployees();
+        unsubVehicles();
+        unsubRoutes();
+        unsubAssignments();
+        unsubCrews();
+        unsubAttendances();
+        unsubDriverShifts();
+        unsubBreakdownAuditLogs();
+      };
+    }
 
     if (backendMode === true) {
       setSyncStatus(prev => ({ ...prev, isOnline: true, syncProtocol: 'Backend Realtime SSE' }));
@@ -236,160 +370,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    // Static / Direct Client Firestore Mode (Vercel)
-    if (!isFirebaseConfigured || !db) {
-      setSyncStatus(prev => ({ ...prev, isOnline: false }));
-      return;
-    }
-    setSyncStatus(prev => ({ ...prev, isOnline: true, syncProtocol: 'Firestore Realtime' }));
-
-    const unsubWorkGroups = onSnapshot(
-      collection(db, 'workGroups'),
-      snap => {
-        const docs = snap.docs.map(d => ({ ...d.data(), id: d.id } as WorkGroup));
-        setRawState(prev => {
-          let nextActive = lockedWorkGroupId || prev.activeWorkGroupId;
-          if (!nextActive && docs.length > 0) nextActive = docs[0].id;
-          if (nextActive && !docs.find(g => g.id === nextActive)) {
-            nextActive = lockedWorkGroupId || (docs.length > 0 ? docs[0].id : null);
-          }
-          if (nextActive) localStorage.setItem('PROMO_ACTIVE_GROUP', nextActive);
-          return { ...prev, workGroups: docs, activeWorkGroupId: nextActive };
-        });
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error workGroups', err?.message || err);
-        try {
-          handleFirestoreError(err, OperationType.LIST, 'workGroups');
-        } catch {}
-      }
-    );
-
-    const unsubEmployees = onSnapshot(
-      collection(db, 'employees'),
-      snap => {
-        setRawState(prev => ({ ...prev, employees: snap.docs.map(d => ({ ...d.data(), id: d.id } as Employee)) }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error employees', err?.message || err);
-      }
-    );
-
-    const unsubVehicles = onSnapshot(
-      collection(db, 'vehicles'),
-      snap => {
-        setRawState(prev => ({ ...prev, vehicles: snap.docs.map(d => ({ ...d.data(), id: d.id } as Vehicle)) }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error vehicles', err?.message || err);
-      }
-    );
-
-    const unsubRoutes = onSnapshot(
-      collection(db, 'routes'),
-      snap => {
-        setRawState(prev => ({ ...prev, routes: snap.docs.map(d => ({ ...d.data(), id: d.id } as RouteDef)) }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error routes', err?.message || err);
-      }
-    );
-
-    const unsubAssignments = onSnapshot(
-      collection(db, 'assignments'),
-      snap => {
-        setRawState(prev => ({
-          ...prev,
-          assignments: snap.docs.map(d => {
-            const data = d.data();
-            let finalData = { ...data, id: d.id } as Assignment;
-            const metaIncident = finalData.incidents?.find(i => i.id === 'SYS_META');
-            if (metaIncident) {
-              try {
-                const meta = JSON.parse(metaIncident.description);
-                finalData = { ...finalData, ...meta, incidents: finalData.incidents.filter(i => i.id !== 'SYS_META') };
-              } catch {}
-            }
-            return finalData;
-          }),
-        }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error assignments', err?.message || err);
-      }
-    );
-
-    const unsubCrews = onSnapshot(
-      collection(db, 'crews'),
-      snap => {
-        setRawState(prev => ({ ...prev, crews: snap.docs.map(d => ({ ...d.data(), id: d.id } as CrewTemplate)) }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error crews', err?.message || err);
-      }
-    );
-
-    const unsubAttendances = onSnapshot(
-      collection(db, 'attendances'),
-      snap => {
-        setRawState(prev => ({ ...prev, attendances: snap.docs.map(d => ({ ...d.data(), id: d.id } as Attendance)) }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error attendances', err?.message || err);
-      }
-    );
-
-    const unsubDriverShifts = onSnapshot(
-      collection(db, 'driver_shifts'),
-      snap => {
-        const docs = snap.docs
-          .map(d => ({ ...d.data(), id: d.id } as DriverShift))
-          .sort((a, b) => (b.t1StartShiftAt || '').localeCompare(a.t1StartShiftAt || ''));
-        setRawState(prev => ({ ...prev, driverShifts: docs }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error driver_shifts', err?.message || err);
-      }
-    );
-
-    const unsubBreakdownAuditLogs = onSnapshot(
-      collection(db, 'breakdown_audit_logs'),
-      snap => {
-        const docs = snap.docs
-          .map(d => ({ ...d.data(), id: d.id } as BreakdownAuditLog))
-          .sort((a, b) => (b.reportedAt || '').localeCompare(a.reportedAt || ''));
-        setRawState(prev => ({ ...prev, breakdownAuditLogs: docs }));
-        setSyncStatus(prev => ({ ...prev, lastSyncTime: new Date().toLocaleTimeString() }));
-      },
-      err => {
-        console.warn('Firestore error breakdown_audit_logs', err?.message || err);
-      }
-    );
-
-    return () => {
-      unsubWorkGroups();
-      unsubEmployees();
-      unsubVehicles();
-      unsubRoutes();
-      unsubAssignments();
-      unsubCrews();
-      unsubAttendances();
-      unsubDriverShifts();
-      unsubBreakdownAuditLogs();
-    };
+    setSyncStatus(prev => ({ ...prev, isOnline: false }));
   }, [user, lockedWorkGroupId, backendMode, refreshFromBackend, syncStatus.latencyInterval]);
 
   // Enforce RBAC & Group Isolation on the exposed state
   const state = useMemo<AppState>(() => {
     if (!user) return defaultState;
+
+    const resolvedConductorId = isConductor
+      ? user.employeeId || resolveUserConductorEmployee(user, rawState.employees)?.id || ''
+      : '';
 
     if (lockedWorkGroupId) {
       const lockedGroup = rawState.workGroups.find(wg => wg.id === lockedWorkGroupId);
@@ -403,7 +393,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const filteredShifts = rawState.driverShifts
         .filter(s => s.workGroupId === lockedWorkGroupId)
-        .filter(s => !isConductor || s.createdByUserId === user.id || (user.employeeId && s.driverId === user.employeeId));
+        .filter(s => !isConductor || s.createdByUserId === user.id || (resolvedConductorId && s.driverId === resolvedConductorId));
 
       return {
         ...rawState,
@@ -426,7 +416,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return {
         ...rawState,
         driverShifts: rawState.driverShifts.filter(
-          s => s.createdByUserId === user.id || (user.employeeId && s.driverId === user.employeeId)
+          s => s.createdByUserId === user.id || (resolvedConductorId && s.driverId === resolvedConductorId)
         ),
         breakdownAuditLogs: [],
       };
@@ -736,11 +726,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       if (useBackendSync) {
         await syncCreateDocApi('crews', payload);
-        await refreshFromBackend();
+        if (!isFirebaseConfigured || !db) await refreshFromBackend();
         return;
       }
       const docRef = doc(collection(db, 'crews'));
-      await setDoc(docRef, payload);
+      try {
+        await setDoc(docRef, payload);
+      } catch (fsErr) {
+        handleFirestoreError(fsErr, OperationType.CREATE, `crews/${docRef.id}`);
+      }
     } catch (e) {
       console.error(e);
       throw e;
@@ -766,10 +760,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : { ...crew, assistantIds: check.normalizedAssistantIds };
       if (useBackendSync) {
         await syncUpdateDocApi('crews', id, safeCrew);
-        await refreshFromBackend();
+        if (!isFirebaseConfigured || !db) await refreshFromBackend();
         return;
       }
-      await updateDoc(doc(db, 'crews', id), safeCrew);
+      try {
+        await updateDoc(doc(db, 'crews', id), safeCrew);
+      } catch (fsErr) {
+        handleFirestoreError(fsErr, OperationType.UPDATE, `crews/${id}`);
+      }
     } catch (e) {
       console.error(e);
       throw e;
@@ -842,12 +840,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (useBackendSync) {
         await syncCreateDocApi('assignments', payload);
-        await refreshFromBackend();
+        if (!isFirebaseConfigured || !db) await refreshFromBackend();
         return;
       }
 
       const docRef = doc(collection(db, 'assignments'));
-      await setDoc(docRef, payload);
+      try {
+        await setDoc(docRef, payload);
+      } catch (fsErr) {
+        handleFirestoreError(fsErr, OperationType.CREATE, `assignments/${docRef.id}`);
+      }
     } catch (e) {
       console.error(e);
       throw e;
@@ -941,24 +943,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const targetVehicleId = updates.vehicleId ?? assignment.vehicleId;
     const targetEmployeeIds = updates.employeeIds ?? assignment.employeeIds;
     const vehicleChanged = updates.vehicleId !== undefined && updates.vehicleId !== assignment.vehicleId;
+    const crewChanged = updates.employeeIds !== undefined;
 
-    const check = validateAssignmentSelection({
-      routeId: assignment.routeId,
-      vehicleId: targetVehicleId,
-      employeeIds: targetEmployeeIds,
-      routes: rawState.routes,
-      vehicles: rawState.vehicles,
-      employees: rawState.employees,
-      requireOperationalVehicle: vehicleChanged,
-    });
-    if (!check.ok || !check.normalizedEmployeeIds) {
-      throw new Error(check.error || 'Los recursos asignados no cumplen con las reglas (1 Conductor y máximo 3 Auxiliares).');
+    let normalizedEmployeeIds = assignment.employeeIds;
+    if (crewChanged) {
+      const check = validateAssignmentSelection({
+        routeId: assignment.routeId,
+        vehicleId: targetVehicleId,
+        employeeIds: targetEmployeeIds,
+        routes: rawState.routes,
+        vehicles: rawState.vehicles,
+        employees: rawState.employees,
+        requireOperationalVehicle: vehicleChanged,
+      });
+      if (!check.ok || !check.normalizedEmployeeIds) {
+        throw new Error(check.error || 'Los recursos asignados no cumplen con las reglas (1 Conductor y máximo 3 Auxiliares).');
+      }
+      normalizedEmployeeIds = check.normalizedEmployeeIds;
+    } else if (vehicleChanged) {
+      const routeMatch = rawState.routes.find(r => r.id === assignment.routeId);
+      const vehicleMatch = rawState.vehicles.find(v => v.id === targetVehicleId);
+      if (!routeMatch) {
+        throw new Error('La ruta asociada a la asignación no existe en el catálogo.');
+      }
+      if (!vehicleMatch) {
+        throw new Error('Debe seleccionar un vehículo existente en el catálogo.');
+      }
+      if (vehicleMatch.status !== 'Operativo') {
+        throw new Error(`El vehículo Móvil ${vehicleMatch.internalNumber} (${vehicleMatch.plate}) figura como Inoperativo.`);
+      }
     }
 
     try {
       const updateData: any = {};
       if (updates.vehicleId !== undefined) updateData.vehicleId = updates.vehicleId;
-      if (updates.employeeIds !== undefined) updateData.employeeIds = check.normalizedEmployeeIds;
+      if (updates.employeeIds !== undefined) updateData.employeeIds = normalizedEmployeeIds;
 
       const meta: any = {
         salidaBaseAt: assignment.salidaBaseAt,
@@ -1000,9 +1019,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (useBackendSync) {
         await syncUpdateDocApi('assignments', id, updateData);
-        await refreshFromBackend();
+        if (!isFirebaseConfigured || !db) await refreshFromBackend();
       } else {
-        await updateDoc(doc(db, 'assignments', id), updateData);
+        try {
+          await updateDoc(doc(db, 'assignments', id), updateData);
+        } catch (fsErr) {
+          handleFirestoreError(fsErr, OperationType.UPDATE, `assignments/${id}`);
+        }
       }
 
       if (updates.statusTimestamps && user && ['admin', 'gestion', 'supervisor'].includes(user.role)) {
@@ -1020,7 +1043,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               t3EndRouteAt: meta.finRutaAt ?? linkedShift.t3EndRouteAt ?? null,
               t4ArriveBaseAt: meta.llegadaBaseAt ?? linkedShift.t4ArriveBaseAt ?? null,
             });
-            if (useBackendSync) await refreshFromBackend();
+            if (useBackendSync && (!isFirebaseConfigured || !db)) await refreshFromBackend();
           } catch (syncErr) {
             console.warn('No se pudo sincronizar tiempos con jornada de conductor:', syncErr);
           }

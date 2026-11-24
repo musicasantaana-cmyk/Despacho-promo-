@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import {
   MAX_AUXILIARIES_PER_ROUTE,
+  formatFirestoreRuleError,
   getAssignmentCrewBreakdown,
   getEffectiveAssignmentWithShift,
   isConductorRole,
@@ -368,7 +369,9 @@ export const TrackingPage: React.FC = () => {
       });
       setShowEditModal(false);
     } catch (err: any) {
-      setEditError(err?.message || 'No se pudieron guardar los cambios de la asignación.');
+      setEditError(
+        formatFirestoreRuleError(err, 'No se pudieron guardar los cambios de la asignación.')
+      );
     } finally {
       setEditSaving(false);
     }
