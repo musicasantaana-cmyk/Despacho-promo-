@@ -19,6 +19,12 @@ const CLIENT_USER_TOKEN_PREFIX = 'fb_user:';
 const CLIENT_AUTH_TOKEN_PREFIX = 'fb_auth:';
 const VALID_ROLES: ReadonlyArray<UserRole> = ['admin', 'gestion', 'supervisor', 'conductor'];
 
+function shouldUseDirectFirebaseClient(): boolean {
+  const isVercelHost =
+    typeof window !== 'undefined' && window.location.hostname.includes('vercel.app');
+  return Boolean(isVercelHost || import.meta.env.PROD);
+}
+
 function normalizeRole(rawRole: unknown, fallback: UserRole = 'gestion'): UserRole {
   return VALID_ROLES.includes(rawRole as UserRole) ? (rawRole as UserRole) : fallback;
 }
@@ -280,55 +286,7 @@ async function fetchSessionFromFirebaseClient(token: string): Promise<{ user: Au
   throw new Error('Sesión no válida en modo estático.');
 }
 
-export async function loginApi(
-  username: string,
-  password: string
-): Promise<{ token: string; user: AuthSessionUser }> {
-  const hasBackend = await checkBackendHealthApi();
-  if (!hasBackend) {
-    return loginWithFirebaseClient(username, password);
-  }
-  return apiFetch('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export async function logoutApi(): Promise<void> {
-  const token = getAuthToken();
-  if (auth?.currentUser) {
-    await signOut(auth).catch(() => {});
-  }
-  const isClientToken =
-    Boolean(token?.startsWith(CLIENT_USER_TOKEN_PREFIX)) ||
-    Boolean(token?.startsWith(CLIENT_AUTH_TOKEN_PREFIX));
-  if (!isClientToken && (await checkBackendHealthApi())) {
-    await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
-  }
-  setAuthToken(null);
-}
-
-export async function fetchSessionApi(): Promise<{ user: AuthSessionUser }> {
-  const token = getAuthToken();
-  if (
-    token &&
-    (token.startsWith(CLIENT_USER_TOKEN_PREFIX) || token.startsWith(CLIENT_AUTH_TOKEN_PREFIX))
-  ) {
-    return fetchSessionFromFirebaseClient(token);
-  }
-  const hasBackend = await checkBackendHealthApi();
-  if (!hasBackend) {
-    throw new Error('Sesión expirada.');
-  }
-  return apiFetch('/api/auth/me');
-}
-
-// ── Admin User Management APIs ────────────────────────────────────────────────
-export async function fetchUsersApi(): Promise<{ users: AppUser[] }> {
-  const hasBackend = await checkBackendHealthApi();
-  if (hasBackend) {
-    return apiFetch('/api/users');
-  }
+async function fetchUsersFromFirebaseClient(): Promise<{ users: AppUser[] }> {
   if (!isFirebaseConfigured || !db) {
     throw new Error('Firebase no está configurado.');
   }
@@ -352,7 +310,7 @@ export async function fetchUsersApi(): Promise<{ users: AppUser[] }> {
   return { users };
 }
 
-export async function createUserApi(payload: {
+async function createUserInFirebaseClient(payload: {
   username: string;
   password: string;
   fullName?: string;
@@ -360,13 +318,6 @@ export async function createUserApi(payload: {
   workGroupId?: string;
   employeeId?: string;
 }): Promise<{ user: AppUser }> {
-  const hasBackend = await checkBackendHealthApi();
-  if (hasBackend) {
-    return apiFetch('/api/users', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-  }
   if (!isFirebaseConfigured || !db) {
     throw new Error('Firebase no está configurado.');
   }
@@ -415,7 +366,7 @@ export async function createUserApi(payload: {
   };
 }
 
-export async function updateUserApi(
+async function updateUserInFirebaseClient(
   id: string,
   payload: {
     fullName?: string;
@@ -426,13 +377,6 @@ export async function updateUserApi(
     password?: string;
   }
 ): Promise<{ user: AppUser }> {
-  const hasBackend = await checkBackendHealthApi();
-  if (hasBackend) {
-    return apiFetch(`/api/users/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    });
-  }
   if (!isFirebaseConfigured || !db) {
     throw new Error('Firebase no está configurado.');
   }
@@ -474,18 +418,135 @@ export async function updateUserApi(
   };
 }
 
+async function deleteUserInFirebaseClient(id: string): Promise<{ ok: boolean }> {
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase no está configurado.');
+  }
+  await deleteDoc(doc(db, 'app_users', id));
+  return { ok: true };
+}
+
+export async function loginApi(
+  username: string,
+  password: string
+): Promise<{ token: string; user: AuthSessionUser }> {
+  if (shouldUseDirectFirebaseClient()) {
+    return loginWithFirebaseClient(username, password);
+  }
+  const hasBackend = await checkBackendHealthApi();
+  if (!hasBackend) {
+    return loginWithFirebaseClient(username, password);
+  }
+  return apiFetch('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function logoutApi(): Promise<void> {
+  const token = getAuthToken();
+  if (auth?.currentUser) {
+    await signOut(auth).catch(() => {});
+  }
+  if (shouldUseDirectFirebaseClient()) {
+    setAuthToken(null);
+    return;
+  }
+  const isClientToken =
+    Boolean(token?.startsWith(CLIENT_USER_TOKEN_PREFIX)) ||
+    Boolean(token?.startsWith(CLIENT_AUTH_TOKEN_PREFIX));
+  if (!isClientToken && (await checkBackendHealthApi())) {
+    await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  }
+  setAuthToken(null);
+}
+
+export async function fetchSessionApi(): Promise<{ user: AuthSessionUser }> {
+  const token = getAuthToken();
+  if (
+    token &&
+    (token.startsWith(CLIENT_USER_TOKEN_PREFIX) || token.startsWith(CLIENT_AUTH_TOKEN_PREFIX))
+  ) {
+    return fetchSessionFromFirebaseClient(token);
+  }
+  if (shouldUseDirectFirebaseClient()) {
+    throw new Error('Sesión expirada.');
+  }
+  const hasBackend = await checkBackendHealthApi();
+  if (!hasBackend) {
+    throw new Error('Sesión expirada.');
+  }
+  return apiFetch('/api/auth/me');
+}
+
+// ── Admin User Management APIs ────────────────────────────────────────────────
+export async function fetchUsersApi(): Promise<{ users: AppUser[] }> {
+  if (shouldUseDirectFirebaseClient()) {
+    return fetchUsersFromFirebaseClient();
+  }
+  const hasBackend = await checkBackendHealthApi();
+  if (hasBackend) {
+    return apiFetch('/api/users');
+  }
+  return fetchUsersFromFirebaseClient();
+}
+
+export async function createUserApi(payload: {
+  username: string;
+  password: string;
+  fullName?: string;
+  role: UserRole;
+  workGroupId?: string;
+  employeeId?: string;
+}): Promise<{ user: AppUser }> {
+  if (shouldUseDirectFirebaseClient()) {
+    return createUserInFirebaseClient(payload);
+  }
+  const hasBackend = await checkBackendHealthApi();
+  if (hasBackend) {
+    return apiFetch('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+  return createUserInFirebaseClient(payload);
+}
+
+export async function updateUserApi(
+  id: string,
+  payload: {
+    fullName?: string;
+    role?: UserRole;
+    workGroupId?: string;
+    employeeId?: string;
+    active?: boolean;
+    password?: string;
+  }
+): Promise<{ user: AppUser }> {
+  if (shouldUseDirectFirebaseClient()) {
+    return updateUserInFirebaseClient(id, payload);
+  }
+  const hasBackend = await checkBackendHealthApi();
+  if (hasBackend) {
+    return apiFetch(`/api/users/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  }
+  return updateUserInFirebaseClient(id, payload);
+}
+
 export async function deleteUserApi(id: string): Promise<{ ok: boolean }> {
+  if (shouldUseDirectFirebaseClient()) {
+    return deleteUserInFirebaseClient(id);
+  }
   const hasBackend = await checkBackendHealthApi();
   if (hasBackend) {
     return apiFetch(`/api/users/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
   }
-  if (!isFirebaseConfigured || !db) {
-    throw new Error('Firebase no está configurado.');
-  }
-  await deleteDoc(doc(db, 'app_users', id));
-  return { ok: true };
+  return deleteUserInFirebaseClient(id);
 }
 
 // ── Driver Operational Time Control APIs ──────────────────────────────────────
@@ -656,6 +717,10 @@ export async function addManualShiftEventApi(
 let cachedHealthResult: boolean | null = null;
 
 export async function checkBackendHealthApi(force = false): Promise<boolean> {
+  if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
+    cachedHealthResult = false;
+    return false;
+  }
   if (!force && cachedHealthResult !== null) return cachedHealthResult;
   try {
     const res = await fetch('/api/health', {
