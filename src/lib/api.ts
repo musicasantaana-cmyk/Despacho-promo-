@@ -13,6 +13,24 @@ import {
   where,
 } from 'firebase/firestore';
 import { hashPasswordBrowser, verifyPasswordBrowser } from './clientAuthCrypto';
+import {
+  acknowledgeBreakdownClient,
+  addManualShiftEventClient,
+  arriveBaseClient,
+  confirmChecklistClient,
+  endBreakdownClient,
+  endRefillClient,
+  endRouteClient,
+  fetchBreakdownAuditLogsClient,
+  fetchDriverShiftsClient,
+  finalizePendingShiftClient,
+  startBreakdownClient,
+  startDriverShiftClient,
+  startRefillClient,
+  startRouteClient,
+  startSupportShiftClient,
+  updateShiftTimesClient,
+} from './driverShiftsClient';
 
 const TOKEN_STORAGE_KEY = 'PROMO_AUTH_TOKEN';
 const CLIENT_USER_TOKEN_PREFIX = 'fb_user:';
@@ -23,6 +41,11 @@ function shouldUseDirectFirebaseClient(): boolean {
   const isVercelHost =
     typeof window !== 'undefined' && window.location.hostname.includes('vercel.app');
   return Boolean(isVercelHost || import.meta.env.PROD);
+}
+
+async function useDirectFirestore(): Promise<boolean> {
+  if (shouldUseDirectFirebaseClient()) return true;
+  return !(await checkBackendHealthApi());
 }
 
 function normalizeRole(rawRole: unknown, fallback: UserRole = 'gestion'): UserRole {
@@ -551,6 +574,9 @@ export async function deleteUserApi(id: string): Promise<{ ok: boolean }> {
 
 // ── Driver Operational Time Control APIs ──────────────────────────────────────
 export async function fetchDriverShiftsApi(workGroupId?: string): Promise<{ shifts: DriverShift[] }> {
+  if (await useDirectFirestore()) {
+    return fetchDriverShiftsClient(workGroupId);
+  }
   const qs = workGroupId ? `?workGroupId=${encodeURIComponent(workGroupId)}` : '';
   return apiFetch(`/api/driver-shifts${qs}`);
 }
@@ -566,6 +592,9 @@ export async function startDriverShiftApi(payload: {
   routeCode?: string;
   routeName?: string;
 }): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return startDriverShiftClient(payload);
+  }
   return apiFetch('/api/driver-shifts/start', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -576,6 +605,9 @@ export async function confirmChecklistApi(
   shiftId: string,
   payload: { odometer: number; serviceTime: string }
 ): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return confirmChecklistClient(shiftId, payload);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/checklist-ack`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -583,12 +615,18 @@ export async function confirmChecklistApi(
 }
 
 export async function startRouteApi(shiftId: string): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return startRouteClient(shiftId);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/start-route`, {
     method: 'POST',
   });
 }
 
 export async function endRouteApi(shiftId: string): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return endRouteClient(shiftId);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/end-route`, {
     method: 'POST',
   });
@@ -598,6 +636,9 @@ export async function arriveBaseApi(
   shiftId: string,
   payload?: { weightTons?: number; requireWeight?: boolean }
 ): Promise<{ shift: DriverShift; parentShift?: DriverShift | null }> {
+  if (await useDirectFirestore()) {
+    return arriveBaseClient(shiftId, payload);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/arrive-base`, {
     method: 'POST',
     body: JSON.stringify(payload || {}),
@@ -608,6 +649,9 @@ export async function startSupportShiftApi(
   parentShiftId: string,
   payload: { routeId?: string; routeCode?: string; routeName?: string }
 ): Promise<{ supportShift: DriverShift; parentShift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return startSupportShiftClient(parentShiftId, payload);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(parentShiftId)}/support/start`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -618,6 +662,9 @@ export async function finalizePendingShiftApi(
   shiftId: string,
   payload?: { weightTons?: number; requireWeight?: boolean }
 ): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return finalizePendingShiftClient(shiftId, payload);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/finalize-pending`, {
     method: 'POST',
     body: JSON.stringify(payload || {}),
@@ -625,12 +672,18 @@ export async function finalizePendingShiftApi(
 }
 
 export async function startRefillApi(shiftId: string): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return startRefillClient(shiftId);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/refill/start`, {
     method: 'POST',
   });
 }
 
 export async function endRefillApi(shiftId: string): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return endRefillClient(shiftId);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/refill/end`, {
     method: 'POST',
   });
@@ -641,6 +694,9 @@ export async function startBreakdownApi(
   notes?: string,
   reportedByName?: string
 ): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return startBreakdownClient(shiftId, notes, reportedByName);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/breakdown/start`, {
     method: 'POST',
     body: JSON.stringify({ notes, reportedByName }),
@@ -656,6 +712,9 @@ export async function endBreakdownApi(
     requireReporter?: boolean;
   }
 ): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return endBreakdownClient(shiftId, payload);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/breakdown/end`, {
     method: 'POST',
     body: JSON.stringify(payload || {}),
@@ -667,6 +726,9 @@ export async function acknowledgeBreakdownApi(
   breakdownId: string,
   acknowledgementNotes?: string
 ): Promise<{ shift: DriverShift; auditLog: BreakdownAuditLog }> {
+  if (await useDirectFirestore()) {
+    return acknowledgeBreakdownClient(shiftId, breakdownId, acknowledgementNotes);
+  }
   return apiFetch(
     `/api/driver-shifts/${encodeURIComponent(shiftId)}/breakdown/${encodeURIComponent(breakdownId)}/acknowledge`,
     {
@@ -677,6 +739,9 @@ export async function acknowledgeBreakdownApi(
 }
 
 export async function fetchBreakdownAuditLogsApi(workGroupId?: string): Promise<{ logs: BreakdownAuditLog[] }> {
+  if (await useDirectFirestore()) {
+    return fetchBreakdownAuditLogsClient(workGroupId);
+  }
   const qs = workGroupId ? `?workGroupId=${encodeURIComponent(workGroupId)}` : '';
   return apiFetch(`/api/breakdown-audit-logs${qs}`);
 }
@@ -691,6 +756,9 @@ export async function updateShiftTimesApi(
     weightTons?: number | null;
   }
 ): Promise<{ shift: DriverShift }> {
+  if (await useDirectFirestore()) {
+    return updateShiftTimesClient(shiftId, payload);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/times`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
@@ -707,6 +775,9 @@ export async function addManualShiftEventApi(
     reportedByName?: string;
   }
 ): Promise<{ shift: DriverShift; auditLog?: BreakdownAuditLog }> {
+  if (await useDirectFirestore()) {
+    return addManualShiftEventClient(shiftId, payload);
+  }
   return apiFetch(`/api/driver-shifts/${encodeURIComponent(shiftId)}/manual-event`, {
     method: 'POST',
     body: JSON.stringify(payload),
