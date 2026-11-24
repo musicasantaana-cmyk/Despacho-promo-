@@ -35,10 +35,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const { user: verifiedUser } = await fetchSessionApi();
       setUser(verifiedUser);
-      localStorage.setItem('PROMO_USER_SESSION', JSON.stringify(verifiedUser));
+      try {
+        localStorage.setItem('PROMO_USER_SESSION', JSON.stringify(verifiedUser));
+      } catch {
+        // ignore storage errors
+      }
     } catch {
       setAuthToken(null);
-      localStorage.removeItem('PROMO_USER_SESSION');
+      try {
+        localStorage.removeItem('PROMO_USER_SESSION');
+      } catch {
+        // ignore storage errors
+      }
       setUser(null);
     } finally {
       setLoading(false);
@@ -53,7 +61,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const { token, user: sessionUser } = await loginApi(username, password);
       setAuthToken(token);
-      localStorage.setItem('PROMO_USER_SESSION', JSON.stringify(sessionUser));
+      try {
+        localStorage.setItem('PROMO_USER_SESSION', JSON.stringify(sessionUser));
+      } catch {
+        // ignore storage errors
+      }
       setUser(sessionUser);
       return { success: true };
     } catch (err: any) {
@@ -63,7 +75,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     await logoutApi();
-    localStorage.removeItem('PROMO_USER_SESSION');
+    try {
+      localStorage.removeItem('PROMO_USER_SESSION');
+    } catch {
+      // ignore storage errors
+    }
     setUser(null);
   };
 

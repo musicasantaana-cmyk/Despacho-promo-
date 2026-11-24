@@ -1,6 +1,64 @@
 import { AppUser, AuthSessionUser, BreakdownAuditLog, DriverShift, UserRole } from '../types';
+import { auth, db, isFirebaseConfigured } from './firebase';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
+import { hashPasswordBrowser, verifyPasswordBrowser } from './clientAuthCrypto';
 
 const TOKEN_STORAGE_KEY = 'PROMO_AUTH_TOKEN';
+const CLIENT_USER_TOKEN_PREFIX = 'fb_user:';
+const CLIENT_AUTH_TOKEN_PREFIX = 'fb_auth:';
+const VALID_ROLES: ReadonlyArray<UserRole> = ['admin', 'gestion', 'supervisor', 'conductor'];
+
+function normalizeRole(rawRole: unknown, fallback: UserRole = 'gestion'): UserRole {
+  return VALID_ROLES.includes(rawRole as UserRole) ? (rawRole as UserRole) : fallback;
+}
+
+function generateClientDocId(prefix: string): string {
+  const bytes = new Uint8Array(6);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  }
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${prefix}_${hex}_${Date.now().toString(36)}`;
+}
+
+function mapFirebaseClientError(err: any, fallbackMessage: string): Error {
+  const code = String(err?.code || '');
+  const msg = String(err?.message || '');
+  if (code === 'permission-denied' || msg.includes('Missing or insufficient permissions')) {
+    return new Error(
+      'Permisos insuficientes en Firestore para consultar la colección app_users. Revisa tus reglas en firestore.rules.'
+    );
+  }
+  if (
+    code === 'auth/invalid-credential' ||
+    code === 'auth/wrong-password' ||
+    code === 'auth/user-not-found' ||
+    code === 'auth/invalid-email'
+  ) {
+    return new Error('Usuario o contraseña incorrectos.');
+  }
+  if (code === 'auth/user-disabled') {
+    return new Error('Usuario deshabilitado. Contacte al administrador.');
+  }
+  if (code === 'auth/too-many-requests') {
+    return new Error('Demasiados intentos fallidos. Intente nuevamente en unos minutos.');
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return new Error('El inicio de sesión con Correo/Contraseña no está habilitado en Firebase Auth.');
+  }
+  return new Error(msg || fallbackMessage);
+}
 
 export function getAuthToken(): string | null {
   try {
@@ -45,10 +103,191 @@ async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
+async function loginWithFirebaseClient(
+  username: string,
+  password: string
+): Promise<{ token: string; user: AuthSessionUser }> {
+  const cleanUsername = username.trim();
+  if (!cleanUsername || !password) {
+    throw new Error('Usuario y contraseña obligatorios.');
+  }
+  if (!isFirebaseConfigured || !db) {
+    throw new Error(
+      'Firebase no está configurado. Configura las variables VITE_FIREBASE_* en tu entorno o en Vercel.'
+    );
+  }
+
+  try {
+    const q = query(collection(db, 'app_users'), where('username', '==', cleanUsername));
+    const snap = await getDocs(q);
+
+    if (!snap.empty) {
+      const userDoc = snap.docs[0];
+      const data = userDoc.data();
+
+      if (data.active === false) {
+        throw new Error('Usuario deshabilitado. Contacte al administrador.');
+      }
+
+      const check = await verifyPasswordBrowser(password, String(data.password || ''));
+      if (!check.valid) {
+        throw new Error('Usuario o contraseña incorrectos.');
+      }
+
+      if (check.needsMigration) {
+        try {
+          const hashed = await hashPasswordBrowser(password);
+          await updateDoc(doc(db, 'app_users', userDoc.id), {
+            password: hashed,
+            updatedAt: new Date().toISOString(),
+          });
+        } catch {
+          // Non-fatal if client update is skipped
+        }
+      }
+
+      const user: AuthSessionUser = {
+        id: userDoc.id,
+        username: String(data.username || cleanUsername),
+        fullName: String(data.fullName || data.username || cleanUsername),
+        role: normalizeRole(data.role, 'gestion'),
+        workGroupId: String(data.workGroupId || ''),
+        employeeId: String(data.employeeId || ''),
+      };
+
+      return {
+        token: `${CLIENT_USER_TOKEN_PREFIX}${userDoc.id}`,
+        user,
+      };
+    }
+
+    // Fallback to Firebase Authentication when user enters an email/password account
+    if (cleanUsername.includes('@') && auth) {
+      const cred = await signInWithEmailAndPassword(auth, cleanUsername, password);
+      const fbUser = cred.user;
+
+      // Enrich role/workGroup from app_users if a matching profile doc exists by uid or email
+      let matchedData: Record<string, any> | null = null;
+      let matchedId = fbUser.uid;
+      const uidDoc = await getDoc(doc(db, 'app_users', fbUser.uid)).catch(() => null);
+      if (uidDoc && uidDoc.exists()) {
+        matchedData = uidDoc.data();
+        matchedId = uidDoc.id;
+      }
+
+      if (matchedData && matchedData.active === false) {
+        await signOut(auth).catch(() => {});
+        throw new Error('Usuario deshabilitado. Contacte al administrador.');
+      }
+
+      const user: AuthSessionUser = {
+        id: matchedId,
+        username: String(matchedData?.username || fbUser.email || cleanUsername),
+        fullName: String(
+          matchedData?.fullName || fbUser.displayName || fbUser.email || cleanUsername
+        ),
+        role: normalizeRole(matchedData?.role, 'admin'),
+        workGroupId: String(matchedData?.workGroupId || ''),
+        employeeId: String(matchedData?.employeeId || ''),
+      };
+
+      return {
+        token: `${CLIENT_AUTH_TOKEN_PREFIX}${fbUser.uid}`,
+        user,
+      };
+    }
+
+    const allUsersSnap = await getDocs(collection(db, 'app_users'));
+    if (allUsersSnap.empty) {
+      throw new Error(
+        'No hay usuarios registrados en Firestore (colección app_users). Crea un usuario en app_users o inicia sesión con un correo de Firebase Auth.'
+      );
+    }
+
+    throw new Error('Usuario o contraseña incorrectos.');
+  } catch (err: any) {
+    throw mapFirebaseClientError(err, 'Error al verificar credenciales en Firebase.');
+  }
+}
+
+async function fetchSessionFromFirebaseClient(token: string): Promise<{ user: AuthSessionUser }> {
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase no configurado.');
+  }
+
+  if (token.startsWith(CLIENT_USER_TOKEN_PREFIX)) {
+    const docId = token.slice(CLIENT_USER_TOKEN_PREFIX.length);
+    if (!docId) throw new Error('Sesión inválida.');
+    const userSnap = await getDoc(doc(db, 'app_users', docId));
+    if (!userSnap.exists()) throw new Error('Usuario no encontrado.');
+    const data = userSnap.data();
+    if (data.active === false) throw new Error('Usuario deshabilitado.');
+
+    return {
+      user: {
+        id: userSnap.id,
+        username: String(data.username || ''),
+        fullName: String(data.fullName || data.username || ''),
+        role: normalizeRole(data.role, 'gestion'),
+        workGroupId: String(data.workGroupId || ''),
+        employeeId: String(data.employeeId || ''),
+      },
+    };
+  }
+
+  if (token.startsWith(CLIENT_AUTH_TOKEN_PREFIX)) {
+    const uid = token.slice(CLIENT_AUTH_TOKEN_PREFIX.length);
+    if (!auth) throw new Error('Firebase Auth no disponible.');
+    if (typeof auth.authStateReady === 'function') {
+      await auth.authStateReady();
+    }
+    const fbUser = auth.currentUser;
+    if (!fbUser || fbUser.uid !== uid) {
+      throw new Error('Sesión expirada.');
+    }
+
+    let matchedData: Record<string, any> | null = null;
+    const uidDoc = await getDoc(doc(db, 'app_users', fbUser.uid)).catch(() => null);
+    if (uidDoc && uidDoc.exists()) {
+      matchedData = uidDoc.data();
+    } else if (fbUser.email) {
+      const emailSnap = await getDocs(
+        query(collection(db, 'app_users'), where('username', '==', fbUser.email))
+      ).catch(() => null);
+      if (emailSnap && !emailSnap.empty) {
+        matchedData = emailSnap.docs[0].data();
+      }
+    }
+
+    if (matchedData && matchedData.active === false) {
+      throw new Error('Usuario deshabilitado.');
+    }
+
+    return {
+      user: {
+        id: fbUser.uid,
+        username: String(matchedData?.username || fbUser.email || fbUser.uid),
+        fullName: String(
+          matchedData?.fullName || fbUser.displayName || fbUser.email || 'Usuario Firebase'
+        ),
+        role: normalizeRole(matchedData?.role, 'admin'),
+        workGroupId: String(matchedData?.workGroupId || ''),
+        employeeId: String(matchedData?.employeeId || ''),
+      },
+    };
+  }
+
+  throw new Error('Sesión no válida en modo estático.');
+}
+
 export async function loginApi(
   username: string,
   password: string
 ): Promise<{ token: string; user: AuthSessionUser }> {
+  const hasBackend = await checkBackendHealthApi();
+  if (!hasBackend) {
+    return loginWithFirebaseClient(username, password);
+  }
   return apiFetch('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
@@ -56,17 +295,61 @@ export async function loginApi(
 }
 
 export async function logoutApi(): Promise<void> {
-  await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  const token = getAuthToken();
+  if (auth?.currentUser) {
+    await signOut(auth).catch(() => {});
+  }
+  const isClientToken =
+    Boolean(token?.startsWith(CLIENT_USER_TOKEN_PREFIX)) ||
+    Boolean(token?.startsWith(CLIENT_AUTH_TOKEN_PREFIX));
+  if (!isClientToken && (await checkBackendHealthApi())) {
+    await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  }
   setAuthToken(null);
 }
 
 export async function fetchSessionApi(): Promise<{ user: AuthSessionUser }> {
+  const token = getAuthToken();
+  if (
+    token &&
+    (token.startsWith(CLIENT_USER_TOKEN_PREFIX) || token.startsWith(CLIENT_AUTH_TOKEN_PREFIX))
+  ) {
+    return fetchSessionFromFirebaseClient(token);
+  }
+  const hasBackend = await checkBackendHealthApi();
+  if (!hasBackend) {
+    throw new Error('Sesión expirada.');
+  }
   return apiFetch('/api/auth/me');
 }
 
 // ── Admin User Management APIs ────────────────────────────────────────────────
 export async function fetchUsersApi(): Promise<{ users: AppUser[] }> {
-  return apiFetch('/api/users');
+  const hasBackend = await checkBackendHealthApi();
+  if (hasBackend) {
+    return apiFetch('/api/users');
+  }
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase no está configurado.');
+  }
+  const snap = await getDocs(collection(db, 'app_users'));
+  const users: AppUser[] = snap.docs
+    .map(d => {
+      const data = d.data();
+      return {
+        id: d.id,
+        username: String(data.username || ''),
+        fullName: String(data.fullName || data.username || ''),
+        role: normalizeRole(data.role, 'gestion'),
+        workGroupId: String(data.workGroupId || ''),
+        employeeId: String(data.employeeId || ''),
+        active: data.active !== false,
+        createdAt: String(data.createdAt || ''),
+        updatedAt: String(data.updatedAt || ''),
+      };
+    })
+    .sort((a, b) => a.username.localeCompare(b.username));
+  return { users };
 }
 
 export async function createUserApi(payload: {
@@ -77,10 +360,59 @@ export async function createUserApi(payload: {
   workGroupId?: string;
   employeeId?: string;
 }): Promise<{ user: AppUser }> {
-  return apiFetch('/api/users', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  const hasBackend = await checkBackendHealthApi();
+  if (hasBackend) {
+    return apiFetch('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase no está configurado.');
+  }
+
+  const cleanUsername = payload.username.trim();
+  if (!cleanUsername || !payload.password) {
+    throw new Error('El usuario y la contraseña son obligatorios.');
+  }
+  const existing = await getDocs(
+    query(collection(db, 'app_users'), where('username', '==', cleanUsername))
+  );
+  if (!existing.empty) {
+    throw new Error('Ya existe un usuario con ese nombre.');
+  }
+
+  const now = new Date().toISOString();
+  const id = generateClientDocId('user');
+  const hashedPassword = await hashPasswordBrowser(payload.password);
+  const role = normalizeRole(payload.role, 'gestion');
+  const docData = {
+    username: cleanUsername,
+    password: hashedPassword,
+    fullName: (payload.fullName || cleanUsername).trim(),
+    role,
+    workGroupId: payload.workGroupId || '',
+    employeeId: payload.employeeId || '',
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await setDoc(doc(db, 'app_users', id), docData);
+
+  return {
+    user: {
+      id,
+      username: docData.username,
+      fullName: docData.fullName,
+      role: docData.role,
+      workGroupId: docData.workGroupId,
+      employeeId: docData.employeeId,
+      active: docData.active,
+      createdAt: docData.createdAt,
+      updatedAt: docData.updatedAt,
+    },
+  };
 }
 
 export async function updateUserApi(
@@ -94,16 +426,66 @@ export async function updateUserApi(
     password?: string;
   }
 ): Promise<{ user: AppUser }> {
-  return apiFetch(`/api/users/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-  });
+  const hasBackend = await checkBackendHealthApi();
+  if (hasBackend) {
+    return apiFetch(`/api/users/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  }
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase no está configurado.');
+  }
+
+  const userRef = doc(db, 'app_users', id);
+  const currentSnap = await getDoc(userRef);
+  if (!currentSnap.exists()) {
+    throw new Error('Usuario no encontrado.');
+  }
+
+  const current = currentSnap.data();
+  const updates: Record<string, any> = {
+    updatedAt: new Date().toISOString(),
+  };
+  if (payload.fullName !== undefined) updates.fullName = payload.fullName.trim();
+  if (payload.role !== undefined) updates.role = normalizeRole(payload.role, 'gestion');
+  if (payload.workGroupId !== undefined) updates.workGroupId = payload.workGroupId;
+  if (payload.employeeId !== undefined) updates.employeeId = payload.employeeId;
+  if (payload.active !== undefined) updates.active = payload.active;
+  if (payload.password && payload.password.trim() !== '') {
+    updates.password = await hashPasswordBrowser(payload.password);
+  }
+
+  await updateDoc(userRef, updates);
+
+  const merged = { ...current, ...updates };
+  return {
+    user: {
+      id,
+      username: String(merged.username || ''),
+      fullName: String(merged.fullName || merged.username || ''),
+      role: normalizeRole(merged.role, 'gestion'),
+      workGroupId: String(merged.workGroupId || ''),
+      employeeId: String(merged.employeeId || ''),
+      active: merged.active !== false,
+      createdAt: String(merged.createdAt || ''),
+      updatedAt: String(merged.updatedAt || ''),
+    },
+  };
 }
 
 export async function deleteUserApi(id: string): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/users/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
+  const hasBackend = await checkBackendHealthApi();
+  if (hasBackend) {
+    return apiFetch(`/api/users/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase no está configurado.');
+  }
+  await deleteDoc(doc(db, 'app_users', id));
+  return { ok: true };
 }
 
 // ── Driver Operational Time Control APIs ──────────────────────────────────────
