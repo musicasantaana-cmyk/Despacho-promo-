@@ -35,6 +35,10 @@ import {
   formatMsAsHoursMins,
   RouteAlertLevel,
 } from '../../utils/shiftTimeMetrics';
+import {
+  findMatchingAssignmentForShift,
+  resolveAssignmentDriver,
+} from '../../utils/assignmentRules';
 
 interface SupportVehicleEntry {
   shiftId: string;
@@ -253,20 +257,7 @@ export const OperationsBoardView: React.FC = () => {
         name: shift.routeName || r?.name || '',
       };
     }
-    const matchingVehicle = state.vehicles.find(
-      v =>
-        (shift.vehicleId && v.id === shift.vehicleId) ||
-        (v.internalNumber.toLowerCase() === shift.vehicleNumber.toLowerCase() &&
-          (!v.workGroupId || v.workGroupId === shift.workGroupId))
-    );
-    const matchingAssignment = state.assignments.find(a => {
-      if (a.date.slice(0, 10) !== shift.date) return false;
-      if (a.workGroupId && a.workGroupId !== shift.workGroupId) return false;
-      if (a.status === 'Cancelado') return false;
-      if (matchingVehicle && a.vehicleId === matchingVehicle.id) return true;
-      if (shift.driverId && (a.employeeIds || []).includes(shift.driverId)) return true;
-      return false;
-    });
+    const matchingAssignment = findMatchingAssignmentForShift(shift, state.assignments, state.vehicles);
     if (matchingAssignment) {
       const r = state.routes.find(rt => rt.id === matchingAssignment.routeId);
       if (r) return { id: r.id, code: r.code, name: r.name };
@@ -279,6 +270,7 @@ export const OperationsBoardView: React.FC = () => {
     const items: BoardCardItem[] = [];
     const seenGroupVehicleKeys = new Set<string>();
     const seenVehicleIds = new Set<string>();
+    const seenDriverKeys = new Set<string>();
 
     const shiftsForDate = state.driverShifts.filter(s => {
       if (s.date !== selectedDate) return false;
@@ -294,11 +286,16 @@ export const OperationsBoardView: React.FC = () => {
       const group = state.workGroups.find(wg => wg.id === shift.workGroupId);
       const groupName = shift.workGroupName || group?.name || 'Grupo';
       const routeInfo = resolveRouteForShift(shift);
+      const catalogDriver = shift.driverId
+        ? state.employees.find(e => e.id === shift.driverId)
+        : undefined;
+      const driverName = catalogDriver?.name || shift.driverName || 'Conductor';
       const hasUnacknowledgedAlarm = (shift.breakdownEvents || []).some(ev => !ev.acknowledgedAt);
       const breakdown = computeShiftTimeBreakdown(shift, nowMs);
 
       seenGroupVehicleKeys.add(`${shift.workGroupId}::${shift.vehicleNumber.trim().toLowerCase()}`);
       if (shift.vehicleId) seenVehicleIds.add(`${shift.workGroupId}::${shift.vehicleId}`);
+      if (shift.driverId) seenDriverKeys.add(`${shift.workGroupId}::driver::${shift.driverId}`);
 
       items.push({
         key: `shift_${shift.id}`,
@@ -310,7 +307,7 @@ export const OperationsBoardView: React.FC = () => {
         groupId: shift.workGroupId,
         groupName,
         status: shift.status,
-        driverName: shift.driverName,
+        driverName,
         isPausedForRefill: shift.isPausedForRefill,
         isInBreakdown: shift.isInBreakdown,
         isSupportShift: false,
@@ -338,12 +335,18 @@ export const OperationsBoardView: React.FC = () => {
       const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
       const vehicleNumber = vehicle?.internalNumber || vehicle?.plate || 'N/A';
       const groupId = a.workGroupId || vehicle?.workGroupId || '';
+      const driver = resolveAssignmentDriver(a, state.employees);
       const dedupKey = `${groupId}::${vehicleNumber.trim().toLowerCase()}`;
-      if (seenGroupVehicleKeys.has(dedupKey) || (a.vehicleId && seenVehicleIds.has(`${groupId}::${a.vehicleId}`))) return;
+      if (
+        seenGroupVehicleKeys.has(dedupKey) ||
+        (a.vehicleId && seenVehicleIds.has(`${groupId}::${a.vehicleId}`)) ||
+        (driver && seenDriverKeys.has(`${groupId}::driver::${driver.id}`))
+      ) {
+        return;
+      }
 
       const group = state.workGroups.find(wg => wg.id === groupId);
       const route = state.routes.find(r => r.id === a.routeId);
-      const driver = state.employees.find(e => (a.employeeIds || []).includes(e.id));
       const historyMap: Record<string, string> = {};
       (a.statusHistory || []).forEach(h => {
         if (!historyMap[h.status]) historyMap[h.status] = h.timestamp;
@@ -365,7 +368,7 @@ export const OperationsBoardView: React.FC = () => {
         groupId,
         groupName: group?.name || 'Grupo',
         status: mappedStatus,
-        driverName: driver?.name || 'Despacho asignado',
+        driverName: driver?.name || 'Sin Conductor',
         isPausedForRefill: a.status === 'Relleno',
         isInBreakdown: false,
         isSupportShift: false,
@@ -465,10 +468,11 @@ export const OperationsBoardView: React.FC = () => {
     if (!q) return items;
     return items.filter(
       c =>
+        c.driverName.toLowerCase().includes(q) ||
         c.vehicleNumber.toLowerCase().includes(q) ||
         c.routeCode.toLowerCase().includes(q) ||
+        c.routeName.toLowerCase().includes(q) ||
         c.groupName.toLowerCase().includes(q) ||
-        c.driverName.toLowerCase().includes(q) ||
         c.supportingVehicles.some(
           sv => sv.vehicleNumber.toLowerCase().includes(q) || sv.driverName.toLowerCase().includes(q)
         )
@@ -1191,8 +1195,8 @@ export const OperationsBoardView: React.FC = () => {
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Móvil / ruta..."
-                className="w-32 sm:w-40 bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2 py-1 text-xs text-white placeholder-slate-400 outline-none focus:ring-1 focus:ring-emerald-500"
+                placeholder="Conductor / ruta / móvil..."
+                className="w-40 sm:w-48 bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2 py-1 text-xs text-white placeholder-slate-400 outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
 
@@ -1272,7 +1276,7 @@ export const OperationsBoardView: React.FC = () => {
                     : 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600'
                 }`}
               >
-                {card.routeAlertLevel === 'critical' ? 'CRÍTICA +10h' : 'ALERTA +8h'} · M.{card.vehicleNumber} ({formatMsAsHoursMins(card.routeElapsedMs)})
+                {card.routeAlertLevel === 'critical' ? 'CRÍTICA +10h' : 'ALERTA +8h'} · {card.driverName} · {card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.{card.vehicleNumber} ({formatMsAsHoursMins(card.routeElapsedMs)})
               </button>
             ))}
           </div>
@@ -1289,7 +1293,7 @@ export const OperationsBoardView: React.FC = () => {
           className={
             visibleGroups.length === 1
               ? 'w-full'
-              : 'grid grid-flow-col auto-cols-[minmax(228px,1fr)] gap-2 overflow-x-auto pb-1'
+              : 'grid grid-flow-col auto-cols-[minmax(280px,1fr)] gap-2 overflow-x-auto pb-1'
           }
         >
           {visibleGroups.map(group => {
@@ -1366,18 +1370,18 @@ export const OperationsBoardView: React.FC = () => {
                             <div
                               className={
                                 visibleGroups.length === 1
-                                  ? 'grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1'
-                                  : 'grid grid-cols-3 gap-1'
+                                  ? 'grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-1.5'
+                                  : 'grid grid-cols-2 gap-1'
                               }
                             >
                               {laneCards.map(card => {
-                                const supportVehiclesList = card.supportingVehicles.map(v => `M.${v.vehicleNumber}`).join(', ');
+                                const supportVehiclesList = card.supportingVehicles.map(v => `${v.driverName} (M.${v.vehicleNumber})`).join(', ');
                                 return (
                                   <button
                                     key={card.key}
                                     type="button"
                                     onClick={() => openCardDetail(card)}
-                                    title={`Móvil ${card.vehicleNumber}${
+                                    title={`Conductor: ${card.driverName} · ${card.routeCode !== 'S/R' ? `Ruta ${card.routeCode}` : 'Sin ruta'} · Móvil ${card.vehicleNumber} · ${card.groupName}${
                                       card.isPausedForSupport
                                         ? ' · PAUSADA POR APOYO'
                                         : card.isSupportShift
@@ -1389,10 +1393,10 @@ export const OperationsBoardView: React.FC = () => {
                                         : card.routeAlertLevel === 'warning'
                                           ? ` · ALERTA +8h (${formatMsAsHoursMins(card.routeElapsedMs)})`
                                           : ''
-                                    } · ${card.routeCode !== 'S/R' ? `Ruta ${card.routeCode}` : 'Sin ruta'} · ${card.groupName} · ${card.driverName}${
+                                    }${
                                       supportVehiclesList ? ` · Apoyando: ${supportVehiclesList}` : ''
                                     }`}
-                                    className={`text-left rounded px-1 py-1 border transition-colors min-w-0 ${
+                                    className={`text-left rounded px-1.5 py-1 border transition-colors min-w-0 ${
                                       card.isPausedForSupport
                                         ? 'bg-blue-100 border-blue-500 hover:bg-blue-200'
                                         : card.isInBreakdown || card.hasUnacknowledgedAlarm
@@ -1412,11 +1416,11 @@ export const OperationsBoardView: React.FC = () => {
                                   >
                                     <div className="flex items-center justify-between gap-0.5 leading-none">
                                       <span
-                                        className={`text-[10px] font-extrabold font-mono tabular-nums tracking-tight truncate ${
+                                        className={`text-[10px] font-extrabold tracking-tight truncate ${
                                           card.isPausedForSupport ? 'text-blue-950' : 'text-slate-900'
                                         }`}
                                       >
-                                        M.{card.vehicleNumber}
+                                        {card.driverName}
                                       </span>
                                       <span className="flex items-center gap-0.5 shrink-0">
                                         {card.routeAlertLevel === 'critical' && (
@@ -1446,21 +1450,21 @@ export const OperationsBoardView: React.FC = () => {
                                       </span>
                                     </div>
                                     <div
-                                      className={`text-[9px] font-medium leading-tight truncate mt-0.5 ${
+                                      className={`text-[9px] font-mono font-semibold leading-tight truncate mt-0.5 ${
                                         card.isPausedForSupport
                                           ? 'text-blue-800 font-bold'
                                           : card.supportingVehicles.length > 0 || card.isSupportShift
                                             ? 'text-orange-700 font-bold'
-                                            : 'text-slate-500'
+                                            : 'text-slate-600'
                                       }`}
                                     >
                                       {card.isPausedForSupport
-                                        ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · Pausa`
+                                        ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber} · Pausa`
                                         : card.supportingVehicles.length > 0
-                                          ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · +${card.supportingVehicles.map(v => `M.${v.vehicleNumber}`).join(',')}`
+                                          ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber} +${card.supportingVehicles.length}`
                                           : card.isPendingAssignment
-                                            ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · Asignada`
-                                            : `${card.isSupportShift ? 'Apoyo ' : ''}${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · ${card.groupName}`}
+                                            ? `${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber} · Asig.`
+                                            : `${card.isSupportShift ? 'Apoyo ' : ''}${card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.${card.vehicleNumber}`}
                                     </div>
                                   </button>
                                 );
@@ -1490,8 +1494,8 @@ export const OperationsBoardView: React.FC = () => {
                             <div
                               className={
                                 visibleGroups.length === 1
-                                  ? 'grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1'
-                                  : 'grid grid-cols-3 gap-1'
+                                  ? 'grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-1.5'
+                                  : 'grid grid-cols-2 gap-1'
                               }
                             >
                               {lane.cards.map(card => {
@@ -1503,21 +1507,25 @@ export const OperationsBoardView: React.FC = () => {
                                   lane.key === 'CON_AVERIA'
                                     ? (card.shift?.isInBreakdown ? card.vehicleNumber : matchingSupport?.vehicleNumber || card.vehicleNumber)
                                     : (card.shift?.isPausedForRefill ? card.vehicleNumber : matchingSupport?.vehicleNumber || card.vehicleNumber);
+                                const displayDriver =
+                                  lane.key === 'CON_AVERIA'
+                                    ? (card.shift?.isInBreakdown ? card.driverName : matchingSupport?.driverName || card.driverName)
+                                    : (card.shift?.isPausedForRefill ? card.driverName : matchingSupport?.driverName || card.driverName);
                                 return (
                                   <button
                                     key={`${lane.key}_${card.key}`}
                                     type="button"
                                     onClick={() => openCardDetail(card)}
-                                    title={`Móvil ${displayVehicle} · ${card.routeCode !== 'S/R' ? `Ruta ${card.routeCode}` : 'Sin ruta'} · ${card.groupName} · ${card.driverName}`}
-                                    className={`text-left rounded px-1 py-1 border transition-colors min-w-0 ${
+                                    title={`Conductor: ${displayDriver} · ${card.routeCode !== 'S/R' ? `Ruta ${card.routeCode}` : 'Sin ruta'} · Móvil ${displayVehicle} · ${card.groupName}`}
+                                    className={`text-left rounded px-1.5 py-1 border transition-colors min-w-0 ${
                                       lane.key === 'CON_AVERIA'
                                         ? 'bg-rose-50 border-rose-300 hover:bg-rose-100'
                                         : 'bg-purple-50 border-purple-300 hover:bg-purple-100'
                                     }`}
                                   >
                                     <div className="flex items-center justify-between gap-0.5 leading-none">
-                                      <span className="text-[10px] font-extrabold font-mono tabular-nums tracking-tight text-slate-900 truncate">
-                                        M.{displayVehicle}
+                                      <span className="text-[10px] font-extrabold tracking-tight text-slate-900 truncate">
+                                        {displayDriver}
                                       </span>
                                       {lane.key === 'CON_AVERIA' ? (
                                         <AlertTriangle className="h-2.5 w-2.5 text-rose-600 shrink-0" />
@@ -1525,8 +1533,8 @@ export const OperationsBoardView: React.FC = () => {
                                         <PauseCircle className="h-2.5 w-2.5 text-purple-600 shrink-0" />
                                       )}
                                     </div>
-                                    <div className="text-[9px] font-medium leading-tight text-slate-500 truncate mt-0.5">
-                                      {card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · {card.groupName}
+                                    <div className="text-[9px] font-mono font-semibold leading-tight text-slate-600 truncate mt-0.5">
+                                      {card.routeCode !== 'S/R' ? card.routeCode : 'S/R'} · M.{displayVehicle}
                                     </div>
                                   </button>
                                 );
@@ -1555,27 +1563,38 @@ export const OperationsBoardView: React.FC = () => {
             onClick={e => e.stopPropagation()}
           >
             <div className="bg-slate-900 text-white px-5 py-4 flex items-center justify-between shrink-0">
-              <div>
-                <h3 className="font-bold text-base font-mono">Móvil {liveSelectedCard.vehicleNumber}</h3>
-                <p className="text-xs text-slate-300 mt-0.5">
-                  Grupo {liveSelectedCard.groupName} ·{' '}
+              <div className="min-w-0">
+                <h3 className="font-bold text-base truncate">{liveSelectedCard.driverName}</h3>
+                <p className="text-xs text-slate-300 mt-0.5 font-mono">
                   {liveSelectedCard.routeCode !== 'S/R'
                     ? `Ruta ${liveSelectedCard.routeCode}${liveSelectedCard.routeName ? ` (${liveSelectedCard.routeName})` : ''}`
-                    : 'Sin ruta asociada'}
+                    : 'Sin ruta asociada'} · Móvil {liveSelectedCard.vehicleNumber} · Grupo {liveSelectedCard.groupName}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setSelectedCard(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 shrink-0"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
             <div className="p-5 space-y-3 text-sm overflow-y-auto">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Conductor:</span>
-                <span className="font-bold text-slate-900">{liveSelectedCard.driverName}</span>
+              <div className="grid grid-cols-3 gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block">Conductor</span>
+                  <span className="font-bold text-slate-900 truncate block">{liveSelectedCard.driverName}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block">Ruta</span>
+                  <span className="font-mono font-bold text-slate-900 truncate block">
+                    {liveSelectedCard.routeCode !== 'S/R' ? liveSelectedCard.routeCode : 'Sin ruta'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block">Móvil</span>
+                  <span className="font-mono font-bold text-slate-900 truncate block">M.{liveSelectedCard.vehicleNumber}</span>
+                </div>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Estado Actual:</span>

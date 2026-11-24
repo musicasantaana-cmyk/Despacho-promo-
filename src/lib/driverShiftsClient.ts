@@ -1,15 +1,24 @@
 import {
+  Assignment,
   AuthSessionUser,
   BreakdownAuditLog,
   BreakdownEvent,
   DriverShift,
   DriverShiftStatus,
+  Incident,
   RefillEvent,
+  RouteDef,
   SupportPauseEvent,
   UserRole,
+  Vehicle,
 } from '../types';
 import { auth, db, isFirebaseConfigured } from './firebase';
-import { collection, doc, getDoc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import {
+  buildMergedStatusHistoryFromShift,
+  findMatchingAssignmentForShift,
+  mapDriverShiftToAssignmentStatus,
+} from '../utils/assignmentRules';
 
 const CLIENT_USER_TOKEN_PREFIX = 'fb_user:';
 const VALID_ROLES: ReadonlyArray<UserRole> = ['admin', 'gestion', 'supervisor', 'conductor'];
@@ -295,6 +304,71 @@ function recalculateShiftDerivedMetrics(
   };
 }
 
+async function syncMatchingAssignmentFromShift(shift: DriverShift): Promise<void> {
+  if (!shift || shift.isSupportShift) return;
+  try {
+    const [assignSnap, vehiclesSnap] = await Promise.all([
+      getDocs(query(collection(db, 'assignments'), where('workGroupId', '==', shift.workGroupId))),
+      getDocs(query(collection(db, 'vehicles'), where('workGroupId', '==', shift.workGroupId))),
+    ]);
+
+    const vehicles: Vehicle[] = vehiclesSnap.docs.map(d => ({ ...(d.data() as Omit<Vehicle, 'id'>), id: d.id }));
+    const assignments: Assignment[] = assignSnap.docs.map(d => {
+      const data = d.data();
+      let finalData = { ...data, id: d.id } as Assignment;
+      const metaInc = finalData.incidents?.find(i => i.id === 'SYS_META');
+      if (metaInc) {
+        try {
+          const parsedMeta = JSON.parse(metaInc.description);
+          finalData = {
+            ...finalData,
+            ...parsedMeta,
+            incidents: (finalData.incidents || []).filter(i => i.id !== 'SYS_META'),
+          };
+        } catch {
+          // ignore malformed meta
+        }
+      }
+      return finalData;
+    });
+
+    const match = findMatchingAssignmentForShift(shift, assignments, vehicles);
+    if (!match) return;
+
+    const nextStatus = mapDriverShiftToAssignmentStatus(shift);
+    const mergedHistory = buildMergedStatusHistoryFromShift(match.statusHistory || [], shift);
+    const meta = {
+      createdAt: match.createdAt || match.date,
+      salidaBaseAt: shift.t1StartShiftAt || match.salidaBaseAt,
+      inicioRutaAt: shift.t2StartRouteAt ?? match.inicioRutaAt,
+      finRutaAt: shift.t3EndRouteAt ?? match.finRutaAt,
+      llegadaBaseAt: shift.t4ArriveBaseAt ?? match.llegadaBaseAt,
+      statusHistory: mergedHistory,
+    };
+    const metaIncident: Incident = {
+      id: 'SYS_META',
+      timestamp: new Date().toISOString(),
+      type: 'Otro',
+      description: JSON.stringify(meta),
+      startTime: '',
+      endTime: '',
+    };
+
+    const baseIncidents = (match.incidents || []).filter(i => i.id !== 'SYS_META').slice(0, 49);
+    const updatePayload: Record<string, unknown> = {
+      status: nextStatus,
+      incidents: [...baseIncidents, metaIncident],
+    };
+    if (typeof shift.weightTons === 'number' && Number.isFinite(shift.weightTons)) {
+      updatePayload.weightTons = shift.weightTons;
+    }
+
+    await updateDoc(doc(db, 'assignments', match.id), updatePayload);
+  } catch (err) {
+    console.warn('No se pudo sincronizar jornada con asignación:', err);
+  }
+}
+
 export async function fetchDriverShiftsClient(workGroupId?: string): Promise<{ shifts: DriverShift[] }> {
   ensureFirestoreReady();
   const user = await resolveActiveClientUser();
@@ -350,18 +424,46 @@ export async function startDriverShiftClient(payload: {
   const workGroupName = String(payload.workGroupName || '').trim().slice(0, 100);
   const driverId = String(payload.driverId || '').trim();
   const driverName = String(payload.driverName || '').trim().slice(0, 120);
-  const vehicleNumber = String(payload.vehicleNumber || '').trim().slice(0, 50);
   const vehicleId = String(payload.vehicleId || '').trim().slice(0, 128);
   const routeId = String(payload.routeId || '').trim().slice(0, 128);
-  const routeCode = String(payload.routeCode || '').trim().slice(0, 50);
-  const routeName = String(payload.routeName || '').trim().slice(0, 100);
 
-  if (!workGroupId || !driverId || !driverName || !vehicleNumber) {
-    throw new Error('Grupo operativo, nombre del conductor y número de móvil son obligatorios.');
+  if (!workGroupId || !driverId || !driverName || !vehicleId || !routeId) {
+    throw new Error('Grupo operativo, conductor, vehículo existente y ruta existente son obligatorios.');
   }
   if (!canAccessGroup(user, workGroupId)) {
     throw new Error('Acceso denegado: no puede iniciar turno en otro grupo operativo.');
   }
+
+  // Verify existing vehicle & route in Firestore catalog
+  const [vehSnap, routeSnap] = await Promise.all([
+    getDoc(doc(db, 'vehicles', vehicleId)),
+    getDoc(doc(db, 'routes', routeId)),
+  ]);
+
+  if (!vehSnap.exists()) {
+    throw new Error('El vehículo seleccionado no existe en el catálogo.');
+  }
+  const vehicleData = vehSnap.data() as Omit<Vehicle, 'id'>;
+  if (vehicleData.status !== 'Operativo') {
+    throw new Error(`El vehículo Móvil ${vehicleData.internalNumber} figura como Inoperativo.`);
+  }
+  if (vehicleData.workGroupId && vehicleData.workGroupId !== workGroupId) {
+    throw new Error('El vehículo seleccionado no pertenece al grupo operativo.');
+  }
+
+  if (!routeSnap.exists()) {
+    throw new Error('La ruta seleccionada no existe en el catálogo.');
+  }
+  const routeData = routeSnap.data() as Omit<RouteDef, 'id'>;
+  if (routeData.workGroupId && routeData.workGroupId !== workGroupId) {
+    throw new Error('La ruta seleccionada no pertenece al grupo operativo.');
+  }
+
+  const canonicalVehicleNumber = String(vehicleData.internalNumber || vehicleData.plate || payload.vehicleNumber || '')
+    .trim()
+    .slice(0, 50);
+  const canonicalRouteCode = String(routeData.code || payload.routeCode || '').trim().slice(0, 50);
+  const canonicalRouteName = String(routeData.name || payload.routeName || '').trim().slice(0, 100);
 
   const now = new Date().toISOString();
   const todayDate = new Date().toLocaleDateString('en-CA');
@@ -373,11 +475,11 @@ export async function startDriverShiftClient(payload: {
     workGroupName,
     driverId,
     driverName,
-    vehicleNumber,
+    vehicleNumber: canonicalVehicleNumber,
     vehicleId,
     routeId,
-    routeCode,
-    routeName,
+    routeCode: canonicalRouteCode,
+    routeName: canonicalRouteName,
     createdByUserId: user.id,
     createdByUsername: user.username,
     status: 'EN_TURNO',
@@ -419,7 +521,9 @@ export async function startDriverShiftClient(payload: {
   };
 
   await setDoc(doc(db, 'driver_shifts', docId), shiftDoc);
-  return { shift: { ...shiftDoc, id: docId } };
+  const createdShift: DriverShift = { ...shiftDoc, id: docId };
+  await syncMatchingAssignmentFromShift(createdShift);
+  return { shift: createdShift };
 }
 
 export async function confirmChecklistClient(
@@ -503,7 +607,9 @@ export async function startRouteClient(shiftId: string): Promise<{ shift: Driver
   };
 
   await updateDoc(shiftRef, updates);
-  return { shift: { ...shift, ...updates, id: snap.id } };
+  const nextShift: DriverShift = { ...shift, ...updates, id: snap.id };
+  await syncMatchingAssignmentFromShift(nextShift);
+  return { shift: nextShift };
 }
 
 export async function endRouteClient(shiftId: string): Promise<{ shift: DriverShift }> {
@@ -549,7 +655,9 @@ export async function endRouteClient(shiftId: string): Promise<{ shift: DriverSh
   };
 
   await updateDoc(shiftRef, updates);
-  return { shift: { ...shift, ...updates, id: snap.id } };
+  const nextShift: DriverShift = { ...shift, ...updates, id: snap.id };
+  await syncMatchingAssignmentFromShift(nextShift);
+  return { shift: nextShift };
 }
 
 export async function arriveBaseClient(
@@ -622,6 +730,8 @@ export async function arriveBaseClient(
   }
 
   await updateDoc(shiftRef, updates);
+  const finishedShift = { ...shift, ...updates, id: snap.id } as DriverShift;
+  await syncMatchingAssignmentFromShift(finishedShift);
 
   let updatedParentShift: DriverShift | null = null;
   if (shift.isSupportShift && shift.parentShiftId) {
@@ -654,7 +764,7 @@ export async function arriveBaseClient(
   }
 
   return {
-    shift: { ...shift, ...updates, id: snap.id } as DriverShift,
+    shift: finishedShift,
     parentShift: updatedParentShift,
   };
 }
@@ -683,11 +793,16 @@ export async function startSupportShiftClient(
   }
 
   const routeId = String(payload.routeId || '').trim().slice(0, 128);
-  const routeCode = String(payload.routeCode || '').trim().slice(0, 50);
-  const routeName = String(payload.routeName || '').trim().slice(0, 100);
-  if (!routeCode && !routeName && !routeId) {
-    throw new Error('Debe seleccionar o indicar la nueva ruta de apoyo.');
+  if (!routeId) {
+    throw new Error('Debe seleccionar una ruta de apoyo existente del catálogo.');
   }
+  const routeSnap = await getDoc(doc(db, 'routes', routeId));
+  if (!routeSnap.exists()) {
+    throw new Error('La ruta de apoyo seleccionada no existe en el catálogo.');
+  }
+  const routeData = routeSnap.data() as Omit<RouteDef, 'id'>;
+  const routeCode = String(routeData.code || '').trim().slice(0, 50);
+  const routeName = String(routeData.name || '').trim().slice(0, 100);
 
   const now = new Date().toISOString();
   const supportShiftId = generateClientDocId('shift');
@@ -861,7 +976,9 @@ export async function finalizePendingShiftClient(
   }
 
   await updateDoc(shiftRef, updates);
-  return { shift: { ...shift, ...updates, id: snap.id } as DriverShift };
+  const nextShift = { ...shift, ...updates, id: snap.id } as DriverShift;
+  await syncMatchingAssignmentFromShift(nextShift);
+  return { shift: nextShift };
 }
 
 export async function startRefillClient(shiftId: string): Promise<{ shift: DriverShift }> {
@@ -898,7 +1015,9 @@ export async function startRefillClient(shiftId: string): Promise<{ shift: Drive
   };
 
   await updateDoc(shiftRef, updates);
-  return { shift: { ...shift, ...updates, id: snap.id } };
+  const nextShift: DriverShift = { ...shift, ...updates, id: snap.id };
+  await syncMatchingAssignmentFromShift(nextShift);
+  return { shift: nextShift };
 }
 
 export async function endRefillClient(shiftId: string): Promise<{ shift: DriverShift }> {
@@ -940,7 +1059,9 @@ export async function endRefillClient(shiftId: string): Promise<{ shift: DriverS
   };
 
   await updateDoc(shiftRef, updates);
-  return { shift: { ...shift, ...updates, id: snap.id } };
+  const nextShift: DriverShift = { ...shift, ...updates, id: snap.id };
+  await syncMatchingAssignmentFromShift(nextShift);
+  return { shift: nextShift };
 }
 
 export async function startBreakdownClient(
@@ -1357,7 +1478,9 @@ export async function updateShiftTimesClient(
   };
 
   await updateDoc(shiftRef, updates);
-  return { shift: { ...shift, ...updates, id: snap.id } as DriverShift };
+  const nextShift = { ...shift, ...updates, id: snap.id } as DriverShift;
+  await syncMatchingAssignmentFromShift(nextShift);
+  return { shift: nextShift };
 }
 
 export async function addManualShiftEventClient(

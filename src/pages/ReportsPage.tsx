@@ -25,6 +25,10 @@ import {
   TimeIntervalEvent,
   RouteAlertLevel,
 } from '../utils/shiftTimeMetrics';
+import {
+  getEffectiveAssignmentWithShift,
+  resolveAssignmentDriver,
+} from '../utils/assignmentRules';
 
 type ReportSubTab = 'board' | 'attendance' | 'fleet' | 'export_wizard' | 'general' | 'driver_shifts';
 type DetailModalType = 
@@ -93,19 +97,23 @@ export const ReportsPage: React.FC = () => {
     );
     const filteredRouteIds = new Set(filteredRoutes.map(r => r.id));
 
-    // Relevant assignments matching active group, selected routes, and date logic
-    const relevantAssignments = state.assignments.filter(a => {
-      if (state.activeWorkGroupId && a.workGroupId !== state.activeWorkGroupId) return false;
-      if (selectedRouteIds.length > 0 && !selectedRouteIds.includes(a.routeId)) return false;
-      
-      const asigDate = a.date.slice(0, 10);
-      
-      // Date logic: include if assignment date is within range OR if it's from a past date but not finished
-      const isInRange = asigDate >= selectedDate && asigDate <= selectedEndDate;
-      const isPastUnfinished = asigDate < selectedDate && !['Fin de Ruta', 'Base', 'Cancelado'].includes(a.status);
-      
-      return isInRange || isPastUnfinished;
-    });
+    // Relevant assignments matching active group, selected routes, and date logic (merged with live DriverShifts)
+    const relevantEnrichedAssignments = state.assignments
+      .filter(a => {
+        if (state.activeWorkGroupId && a.workGroupId !== state.activeWorkGroupId) return false;
+        if (selectedRouteIds.length > 0 && !selectedRouteIds.includes(a.routeId)) return false;
+        return true;
+      })
+      .map(a => getEffectiveAssignmentWithShift(a, state.driverShifts, state.vehicles, state.employees))
+      .filter(({ assignment: eff }) => {
+        const asigDate = eff.date.slice(0, 10);
+        const isInRange = asigDate >= selectedDate && asigDate <= selectedEndDate;
+        const isPastUnfinished =
+          asigDate < selectedDate && !['Fin de Ruta', 'Base', 'Cancelado'].includes(eff.status);
+        return isInRange || isPastUnfinished;
+      });
+
+    const relevantAssignments = relevantEnrichedAssignments.map(e => e.assignment);
 
     // Pareto 1: Rutas Asignadas / Total Rutas Disponibles
     const totalRoutesCount = filteredRoutes.length;
@@ -238,28 +246,18 @@ export const ReportsPage: React.FC = () => {
       overallAlertLevel: RouteAlertLevel;
     }
 
-    const timeBreakdownAssignments: TimeBreakdownRow[] = relevantAssignments.map(a => {
-      const asigDate = a.date.slice(0, 10);
-      const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
-      const route = state.routes.find(r => r.id === a.routeId);
-      const group = state.workGroups.find(g => g.id === a.workGroupId);
-      const crew = state.crews.find(c => (a.employeeIds || []).includes(c.driverId));
+    const timeBreakdownAssignments: TimeBreakdownRow[] = relevantEnrichedAssignments.map(
+      ({ assignment: a, linkedShift: matchedShift }) => {
+        const asigDate = a.date.slice(0, 10);
+        const vehicle = state.vehicles.find(v => v.id === a.vehicleId);
+        const route = state.routes.find(r => r.id === a.routeId);
+        const group = state.workGroups.find(g => g.id === a.workGroupId);
+        const driver = resolveAssignmentDriver(a, state.employees);
+        const crew = state.crews.find(c => (a.employeeIds || []).includes(c.driverId));
 
-      // Try matching an unused DriverShift for this assignment
-      const matchedShift =
-        relevantDriverShifts.find(s => {
-          if (usedShiftIds.has(s.id) || s.isSupportShift) return false;
-          if (s.date !== asigDate) return false;
-          if (a.workGroupId && s.workGroupId !== a.workGroupId) return false;
-          if (s.vehicleId && s.vehicleId === a.vehicleId) return true;
-          if (vehicle?.internalNumber && s.vehicleNumber.toLowerCase() === vehicle.internalNumber.toLowerCase()) return true;
-          if (s.driverId && (a.employeeIds || []).includes(s.driverId)) return true;
-          return false;
-        }) || null;
-
-      if (matchedShift) {
-        usedShiftIds.add(matchedShift.id);
-      }
+        if (matchedShift) {
+          usedShiftIds.add(matchedShift.id);
+        }
 
       // Find timestamps from explicit fields, status history, or matched DriverShift
       const historyMap: Record<string, string> = {};
@@ -435,7 +433,7 @@ export const ReportsPage: React.FC = () => {
         routeDestination: route?.destination || 'N/A',
         groupName: group?.name || 'N/A',
         vehicleNumber: vehicle?.internalNumber || matchedShift?.vehicleNumber || 'N/A',
-        crewName: crew?.name || matchedShift?.driverName || 'Sin Tripulación',
+        crewName: driver?.name || matchedShift?.driverName || crew?.name || 'Sin Conductor',
         statusLabel: a.status,
         weightTons:
           a.weightTons !== undefined && a.weightTons > 0

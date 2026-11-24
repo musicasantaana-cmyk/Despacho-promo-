@@ -7,6 +7,11 @@ import {
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { ReportSubMenuHeader } from './ReportSubMenuHeader';
+import {
+  getEffectiveAssignmentWithShift,
+  mapDriverShiftToAssignmentStatus,
+  resolveAssignmentDriver,
+} from '../../utils/assignmentRules';
 
 export const FleetAssetsReportView: React.FC = () => {
   const { state } = useAppContext();
@@ -28,26 +33,58 @@ export const FleetAssetsReportView: React.FC = () => {
     setSelectedGroupIds([]);
   };
 
-  // Currently active assignment vehicle IDs
+  // Currently active assignment / shift vehicle IDs (synchronized live)
   const activeVehicleAssignments = useMemo(() => {
     const map = new Map<string, { assignmentId: string; routeName: string; driverName: string; status: string }>();
-    state.assignments.forEach(a => {
-      if (['Salida de Base', 'Inicio de Ruta', 'Relleno'].includes(a.status)) {
+
+    state.assignments.forEach(raw => {
+      const { assignment: a, linkedShift, effectiveStatus } = getEffectiveAssignmentWithShift(
+        raw,
+        state.driverShifts,
+        state.vehicles,
+        state.employees
+      );
+      if (['Salida de Base', 'Inicio de Ruta', 'Relleno'].includes(effectiveStatus)) {
         const route = state.routes.find(r => r.id === a.routeId);
-        const driver = (a.employeeIds || [])
-          .map(id => state.employees.find(e => e.id === id))
-          .find(e => e?.role === 'Conductor');
+        const driver = resolveAssignmentDriver(a, state.employees);
 
         map.set(a.vehicleId, {
           assignmentId: a.id,
-          routeName: route?.name || 'Ruta en Curso',
-          driverName: driver?.name || 'Conductor Asignado',
-          status: a.status,
+          routeName: route?.name || linkedShift?.routeName || 'Ruta en Curso',
+          driverName: driver?.name || linkedShift?.driverName || 'Conductor Asignado',
+          status: effectiveStatus,
         });
       }
     });
+
+    // Also include active DriverShifts (started directly in Driver module or Apoyo)
+    state.driverShifts.forEach(s => {
+      if (s.status === 'EN_BASE' || s.status === 'FIN_RUTA') return;
+      const vehicle = state.vehicles.find(
+        v =>
+          (s.vehicleId && v.id === s.vehicleId) ||
+          (v.internalNumber.toLowerCase() === s.vehicleNumber.trim().toLowerCase() &&
+            (!v.workGroupId || v.workGroupId === s.workGroupId))
+      );
+      if (!vehicle) return;
+
+      const route = s.routeId
+        ? state.routes.find(r => r.id === s.routeId)
+        : state.routes.find(r => s.routeCode && r.code.toLowerCase() === s.routeCode.toLowerCase());
+      const catalogDriver = s.driverId
+        ? state.employees.find(e => e.id === s.driverId)
+        : undefined;
+
+      map.set(vehicle.id, {
+        assignmentId: s.id,
+        routeName: route?.name || s.routeName || (s.isSupportShift ? 'Apoyo en Ruta' : 'Ruta en Curso'),
+        driverName: catalogDriver?.name || s.driverName || 'Conductor',
+        status: mapDriverShiftToAssignmentStatus(s),
+      });
+    });
+
     return map;
-  }, [state.assignments, state.routes, state.employees]);
+  }, [state.assignments, state.driverShifts, state.routes, state.vehicles, state.employees]);
 
   // Filtered Vehicles
   const filteredVehicles = useMemo(() => {

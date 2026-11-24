@@ -1,8 +1,14 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppContext } from '../context/AppContext';
-import { Assignment, CrewTemplate } from '../types';
-import { Calendar, Map, CheckCircle, Users, Truck, Plus, Trash2 } from 'lucide-react';
+import { Assignment } from '../types';
+import { Calendar, Map as MapIcon, CheckCircle, Users, Truck, Trash2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import {
+  MAX_AUXILIARIES_PER_ROUTE,
+  isConductorRole,
+  validateAssignmentSelection,
+  validateCrewSelection,
+} from '../utils/assignmentRules';
 
 const ConfirmModal = ({ isOpen, onClose, onConfirm, title, message }: { isOpen: boolean, onClose: () => void, onConfirm: () => void, title: string, message: string }) => {
   if (!isOpen) return null;
@@ -26,10 +32,11 @@ export const AssignmentPage: React.FC = () => {
   const { state, addAssignment, addCrew, deleteCrew } = useAppContext();
   const [activeTab, setActiveTab] = useState<'assign' | 'crews'>('assign');
 
-  // Assign state
+  // Assign state (1 Conductor obligatorio + máx 3 Auxiliares)
   const [routeId, setRouteId] = useState('');
   const [vehicleId, setVehicleId] = useState('');
-  const [employeeIds, setEmployeeIds] = useState<string[]>([]);
+  const [selectedDriverId, setSelectedDriverId] = useState('');
+  const [selectedAssistantIds, setSelectedAssistantIds] = useState<string[]>([]);
   const [selectedCrewId, setSelectedCrewId] = useState<string>('');
   const [date, setDate] = useState(() => {
     const d = new Date();
@@ -44,6 +51,8 @@ export const AssignmentPage: React.FC = () => {
   const [crewName, setCrewName] = useState('');
   const [crewDriverId, setCrewDriverId] = useState('');
   const [crewAssistantIds, setCrewAssistantIds] = useState<string[]>([]);
+  const [crewError, setCrewError] = useState('');
+  const [crewSaving, setCrewSaving] = useState(false);
   const [deleteConfirmCrewId, setDeleteConfirmCrewId] = useState<string | null>(null);
 
   // Frequency and availability logic
@@ -92,45 +101,115 @@ export const AssignmentPage: React.FC = () => {
     return set;
   }, [activeEmployeeAssignments]);
 
-  const activeGroupVehicles = state.vehicles.filter(v => v.workGroupId === state.activeWorkGroupId && v.status === 'Operativo');
-  const activeGroupEmployees = state.employees.filter(e => e.workGroupId === state.activeWorkGroupId);
-  const activeGroupRoutes = state.routes.filter(r => r.workGroupId === state.activeWorkGroupId);
-  const activeCrews = (state.crews || []).filter(c => c.workGroupId === state.activeWorkGroupId);
+  const activeGroupVehicles = useMemo(
+    () => state.vehicles.filter(v => v.workGroupId === state.activeWorkGroupId && v.status === 'Operativo'),
+    [state.vehicles, state.activeWorkGroupId]
+  );
+  const activeGroupEmployees = useMemo(
+    () => state.employees.filter(e => e.workGroupId === state.activeWorkGroupId),
+    [state.employees, state.activeWorkGroupId]
+  );
+  const activeGroupRoutes = useMemo(
+    () => state.routes.filter(r => r.workGroupId === state.activeWorkGroupId),
+    [state.routes, state.activeWorkGroupId]
+  );
+  const activeCrews = useMemo(
+    () => (state.crews || []).filter(c => c.workGroupId === state.activeWorkGroupId),
+    [state.crews, state.activeWorkGroupId]
+  );
 
-  const displayedEmployees = useMemo(() => {
-    if (!selectedCrewId) return activeGroupEmployees;
+  const groupDrivers = useMemo(
+    () => activeGroupEmployees.filter(e => isConductorRole(e.role)),
+    [activeGroupEmployees]
+  );
+  const groupAuxiliaries = useMemo(
+    () => activeGroupEmployees.filter(e => !isConductorRole(e.role)),
+    [activeGroupEmployees]
+  );
+
+  const displayedDrivers = useMemo(() => {
+    if (!selectedCrewId) return groupDrivers;
     const crew = activeCrews.find(c => c.id === selectedCrewId);
-    if (!crew) return activeGroupEmployees;
-    const crewMemberIds = new Set([crew.driverId, ...(crew.assistantIds || [])].filter(Boolean));
-    return activeGroupEmployees.filter(e => crewMemberIds.has(e.id));
-  }, [selectedCrewId, activeCrews, activeGroupEmployees]);
+    if (!crew) return groupDrivers;
+    return groupDrivers.filter(e => e.id === crew.driverId);
+  }, [selectedCrewId, activeCrews, groupDrivers]);
 
-  const toggleEmployee = (id: string) => {
-    setEmployeeIds(prev => prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id]);
+  const displayedAuxiliaries = useMemo(() => {
+    if (!selectedCrewId) return groupAuxiliaries;
+    const crew = activeCrews.find(c => c.id === selectedCrewId);
+    if (!crew) return groupAuxiliaries;
+    const auxSet = new Set(crew.assistantIds || []);
+    return groupAuxiliaries.filter(e => auxSet.has(e.id));
+  }, [selectedCrewId, activeCrews, groupAuxiliaries]);
+
+  const toggleAssistant = (id: string) => {
+    setAssignError('');
+    setSelectedAssistantIds(prev => {
+      if (prev.includes(id)) return prev.filter(e => e !== id);
+      if (prev.length >= MAX_AUXILIARIES_PER_ROUTE) {
+        setAssignError(`Solo se permiten máximo ${MAX_AUXILIARIES_PER_ROUTE} auxiliares por ruta.`);
+        return prev;
+      }
+      return [...prev, id];
+    });
   };
 
   const toggleCrewAssistant = (id: string) => {
-    setCrewAssistantIds(prev => prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id]);
+    setCrewError('');
+    setCrewAssistantIds(prev => {
+      if (prev.includes(id)) return prev.filter(e => e !== id);
+      if (prev.length >= MAX_AUXILIARIES_PER_ROUTE) {
+        setCrewError(`Solo se permiten máximo ${MAX_AUXILIARIES_PER_ROUTE} auxiliares por tripulación.`);
+        return prev;
+      }
+      return [...prev, id];
+    });
   };
 
   const handleCrewSelect = (crewId: string) => {
+    setAssignError('');
     setSelectedCrewId(crewId);
     if (!crewId) {
       return;
     }
     const crew = activeCrews.find(c => c.id === crewId);
     if (crew) {
-      const memberIds = [crew.driverId, ...(crew.assistantIds || [])].filter(Boolean);
-      // Auto-select crew members if not already assigned
-      const availableMemberIds = memberIds.filter(id => !assignedEmployeeIds.has(id));
-      setEmployeeIds(prev => Array.from(new Set([...prev, ...availableMemberIds])));
+      const driverAvailable = crew.driverId && !assignedEmployeeIds.has(crew.driverId);
+      setSelectedDriverId(driverAvailable ? crew.driverId : '');
+      const availableAux = (crew.assistantIds || [])
+        .filter(id => id && id !== crew.driverId && !assignedEmployeeIds.has(id))
+        .slice(0, MAX_AUXILIARIES_PER_ROUTE);
+      setSelectedAssistantIds(availableAux);
     }
   };
+
+  const combinedEmployeeIds = useMemo(() => {
+    const ids: string[] = [];
+    if (selectedDriverId) ids.push(selectedDriverId);
+    selectedAssistantIds.forEach(id => {
+      if (id && id !== selectedDriverId && !ids.includes(id)) ids.push(id);
+    });
+    return ids;
+  }, [selectedDriverId, selectedAssistantIds]);
 
   const handleCreateAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     setAssignError('');
-    if (!routeId || !vehicleId || employeeIds.length === 0 || !date || assignSaving) return;
+    if (!date || assignSaving) return;
+
+    const validation = validateAssignmentSelection({
+      routeId,
+      vehicleId,
+      employeeIds: combinedEmployeeIds,
+      routes: activeGroupRoutes,
+      vehicles: activeGroupVehicles,
+      employees: activeGroupEmployees,
+      requireOperationalVehicle: true,
+    });
+    if (!validation.ok || !validation.normalizedEmployeeIds) {
+      setAssignError(validation.error || 'Datos de asignación inválidos.');
+      return;
+    }
     
     // Prevent double booking route
     if (assignedRouteIds.has(routeId)) {
@@ -145,7 +224,7 @@ export const AssignmentPage: React.FC = () => {
     }
 
     // Prevent double booking employees
-    const doubleBooked = employeeIds.filter(id => assignedEmployeeIds.has(id));
+    const doubleBooked = validation.normalizedEmployeeIds.filter(id => assignedEmployeeIds.has(id));
     if (doubleBooked.length > 0) {
       setAssignError('Algunos trabajadores seleccionados ya se encuentran asignados a otra ruta en esta fecha.');
       return;
@@ -154,7 +233,7 @@ export const AssignmentPage: React.FC = () => {
     const newAssignment = {
       routeId,
       vehicleId,
-      employeeIds,
+      employeeIds: validation.normalizedEmployeeIds,
       date
     };
 
@@ -164,7 +243,8 @@ export const AssignmentPage: React.FC = () => {
       setCreatedAssignment(newAssignment);
       setRouteId('');
       setVehicleId('');
-      setEmployeeIds([]);
+      setSelectedDriverId('');
+      setSelectedAssistantIds([]);
       setSelectedCrewId('');
     } catch (err: any) {
       setAssignError(err?.message || 'Error al guardar la asignación. Intente nuevamente.');
@@ -173,19 +253,36 @@ export const AssignmentPage: React.FC = () => {
     }
   };
 
-  const handleSaveCrew = (e: React.FormEvent) => {
+  const handleSaveCrew = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!crewName || !crewDriverId) return;
+    setCrewError('');
+    if (!crewName.trim() || !crewDriverId || crewSaving) return;
 
-    addCrew({
-      name: crewName,
+    const check = validateCrewSelection({
       driverId: crewDriverId,
       assistantIds: crewAssistantIds,
+      employees: activeGroupEmployees,
     });
+    if (!check.ok || !check.normalizedAssistantIds) {
+      setCrewError(check.error || 'Tripulación inválida.');
+      return;
+    }
 
-    setCrewName('');
-    setCrewDriverId('');
-    setCrewAssistantIds([]);
+    setCrewSaving(true);
+    try {
+      await addCrew({
+        name: crewName.trim(),
+        driverId: crewDriverId,
+        assistantIds: check.normalizedAssistantIds,
+      });
+      setCrewName('');
+      setCrewDriverId('');
+      setCrewAssistantIds([]);
+    } catch (err: any) {
+      setCrewError(err?.message || 'Error al guardar la tripulación.');
+    } finally {
+      setCrewSaving(false);
+    }
   };
 
   const confirmDeleteCrew = () => {
@@ -203,7 +300,7 @@ export const AssignmentPage: React.FC = () => {
             onClick={() => setActiveTab('assign')}
             className={`flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'assign' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'}`}
           >
-            <Map className="h-4 w-4 mr-2" />
+            <MapIcon className="h-4 w-4 mr-2" />
             Nueva Asignación
           </button>
           <button
@@ -225,7 +322,7 @@ export const AssignmentPage: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col">
             <h2 className="text-lg font-semibold text-slate-800 mb-6 flex items-center">
-              <Map className="h-5 w-5 mr-2 text-emerald-500" />
+              <MapIcon className="h-5 w-5 mr-2 text-emerald-500" />
               Nueva Asignación de Ruta
             </h2>
             {assignError && (
@@ -250,7 +347,7 @@ export const AssignmentPage: React.FC = () => {
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Ruta Base (Frecuencia de Operación)</label>
                 <select required value={routeId} onChange={e => setRouteId(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
-                  <option value="">Seleccione una ruta...</option>
+                  <option value="">Seleccione una ruta existente...</option>
                   <optgroup label={`Rutas que operan los ${dayNames[selectedDayOfWeek]}`}>
                     {activeGroupRoutes.filter(r => (r.operatingDays || []).includes(selectedDayOfWeek)).map(r => {
                       const isAssigned = assignedRouteIds.has(r.id);
@@ -273,12 +370,12 @@ export const AssignmentPage: React.FC = () => {
                   </optgroup>
                 </select>
                 {activeGroupRoutes.length === 0 && (
-                  <p className="text-xs text-amber-600 mt-1">No hay rutas registradas para este grupo de trabajo.</p>
+                  <p className="text-xs text-amber-600 mt-1">No hay rutas registradas en el catálogo para este grupo de trabajo.</p>
                 )}
               </div>
               
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Vehículo Asignado</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Vehículo Asignado (Catálogo Operativo)</label>
                 <select required value={vehicleId} onChange={e => setVehicleId(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
                   <option value="">Seleccione un vehículo operativo...</option>
                   {activeGroupVehicles.map(v => {
@@ -290,14 +387,17 @@ export const AssignmentPage: React.FC = () => {
                     );
                   })}
                 </select>
+                {activeGroupVehicles.length === 0 && (
+                  <p className="text-xs text-amber-600 mt-1">No hay vehículos operativos registrados en este grupo.</p>
+                )}
               </div>
 
-              <div>
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
-                  <label className="block text-sm font-medium text-slate-700">Personal Asignado</label>
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <label className="block text-sm font-medium text-slate-700">Tripulación Asignada (1 Conductor + máx. {MAX_AUXILIARIES_PER_ROUTE} Auxiliares)</label>
                   {activeCrews.length > 0 && (
                     <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">Filtrar por tripulación:</span>
+                      <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">Tripulación:</span>
                       <select 
                         value={selectedCrewId} 
                         onChange={e => handleCrewSelect(e.target.value)}
@@ -318,8 +418,8 @@ export const AssignmentPage: React.FC = () => {
                 </div>
 
                 {selectedCrewId && (
-                  <div className="mb-2 flex items-center justify-between bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs px-3 py-1.5 rounded-lg">
-                    <span>Mostrando únicamente integrantes de <strong>{activeCrews.find(c => c.id === selectedCrewId)?.name}</strong> ({displayedEmployees.length})</span>
+                  <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs px-3 py-1.5 rounded-lg">
+                    <span>Filtrando por tripulación <strong>{activeCrews.find(c => c.id === selectedCrewId)?.name}</strong></span>
                     <button 
                       type="button" 
                       onClick={() => setSelectedCrewId('')}
@@ -329,58 +429,115 @@ export const AssignmentPage: React.FC = () => {
                     </button>
                   </div>
                 )}
-                
-                <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
-                  {displayedEmployees.map(emp => {
-                    const isAssigned = assignedEmployeeIds.has(emp.id);
-                    return (
-                      <label key={emp.id} className={`flex items-center justify-between px-4 py-3 cursor-pointer ${isAssigned ? 'bg-slate-100/70 opacity-60' : 'hover:bg-slate-50'}`}>
-                        <div className="flex items-center">
-                          <input
-                            type="checkbox"
-                            checked={employeeIds.includes(emp.id)}
-                            disabled={isAssigned}
-                            onChange={() => toggleEmployee(emp.id)}
-                            className="h-4 w-4 text-emerald-500 focus:ring-emerald-500 border-gray-300 rounded disabled:opacity-50"
-                          />
-                          <div className="ml-3 flex flex-col">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium text-slate-800">{emp.name}</span>
-                              {isAssigned && (
-                                <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-200">
-                                  ⛔ YA ASIGNADO HOY
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-xs text-slate-500">{emp.phone ? `Tel: ${emp.phone}` : 'Sin teléfono'}</span>
-                          </div>
-                        </div>
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold ${
-                          emp.role === 'Conductor' 
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                            : emp.role === 'Ayudante' 
-                              ? 'bg-amber-50 text-amber-700 border border-amber-200' 
-                              : 'bg-blue-50 text-blue-700 border border-blue-200'
-                        }`}>
-                          {emp.role}
-                        </span>
-                      </label>
-                    );
-                  })}
-                  {displayedEmployees.length === 0 && (
-                    <div className="p-4 text-sm text-slate-500 text-center">
-                      {selectedCrewId 
-                        ? "No hay integrantes registrados para la tripulación seleccionada."
-                        : "No hay personal registrado en este grupo."}
-                    </div>
+
+                {/* 1. Conductor Obligatorio (exactamente 1) */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-700 mb-1">
+                    Conductor (Obligatorio — 1 por ruta) <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    required
+                    value={selectedDriverId}
+                    onChange={e => {
+                      setAssignError('');
+                      setSelectedDriverId(e.target.value);
+                    }}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
+                  >
+                    <option value="">Seleccione un conductor...</option>
+                    {displayedDrivers.map(emp => {
+                      const isAssigned = assignedEmployeeIds.has(emp.id);
+                      return (
+                        <option key={emp.id} value={emp.id} disabled={isAssigned}>
+                          {emp.name} {emp.phone ? `(${emp.phone})` : ''} {isAssigned ? '⛔ [YA ASIGNADO HOY]' : '✅ [DISPONIBLE]'}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {displayedDrivers.length === 0 && (
+                    <p className="text-xs text-amber-600 mt-1">No hay conductores disponibles en este grupo.</p>
                   )}
                 </div>
-                <div className="flex justify-between items-center mt-2 text-xs text-slate-500">
-                  <span>Seleccionados: <strong className="text-emerald-600">{employeeIds.length}</strong></span>
-                  {employeeIds.length > 0 && (
-                    <button 
-                      type="button" 
-                      onClick={() => setEmployeeIds([])}
+
+                {/* 2. Auxiliares (Máximo 3) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-600">
+                      Auxiliares / Ayudantes (Opcional — máx. {MAX_AUXILIARIES_PER_ROUTE})
+                    </label>
+                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
+                      selectedAssistantIds.length >= MAX_AUXILIARIES_PER_ROUTE
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : 'bg-slate-100 text-slate-700 border-slate-200'
+                    }`}>
+                      {selectedAssistantIds.length} / {MAX_AUXILIARIES_PER_ROUTE} auxiliares
+                    </span>
+                  </div>
+
+                  <div className="max-h-44 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {displayedAuxiliaries.map(emp => {
+                      const isAssigned = assignedEmployeeIds.has(emp.id);
+                      const isChecked = selectedAssistantIds.includes(emp.id);
+                      const limitReached = !isChecked && selectedAssistantIds.length >= MAX_AUXILIARIES_PER_ROUTE;
+                      const isDisabled = isAssigned || limitReached;
+                      return (
+                        <label
+                          key={emp.id}
+                          className={`flex items-center justify-between px-4 py-2.5 ${isDisabled ? 'bg-slate-100/70 opacity-60 cursor-not-allowed' : 'hover:bg-slate-50 cursor-pointer'}`}
+                        >
+                          <div className="flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              disabled={isDisabled}
+                              onChange={() => toggleAssistant(emp.id)}
+                              className="h-4 w-4 text-emerald-500 focus:ring-emerald-500 border-gray-300 rounded disabled:opacity-50"
+                            />
+                            <div className="ml-3 flex flex-col">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-slate-800">{emp.name}</span>
+                                {isAssigned && (
+                                  <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-200">
+                                    ⛔ YA ASIGNADO HOY
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-xs text-slate-500">{emp.phone ? `Tel: ${emp.phone}` : 'Sin teléfono'}</span>
+                            </div>
+                          </div>
+                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold ${
+                            emp.role === 'Ayudante'
+                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                              : 'bg-blue-50 text-blue-700 border border-blue-200'
+                          }`}>
+                            {emp.role}
+                          </span>
+                        </label>
+                      );
+                    })}
+                    {displayedAuxiliaries.length === 0 && (
+                      <div className="p-4 text-sm text-slate-500 text-center">
+                        {selectedCrewId
+                          ? 'Sin auxiliares registrados para la tripulación seleccionada.'
+                          : 'No hay auxiliares/ayudantes registrados en este grupo.'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center text-xs text-slate-500">
+                  <span>
+                    Resumen: <strong className="text-emerald-600">{selectedDriverId ? 1 : 0} Conductor</strong> +{' '}
+                    <strong className="text-slate-700">{selectedAssistantIds.length} Auxiliar(es)</strong>
+                  </span>
+                  {(selectedDriverId || selectedAssistantIds.length > 0) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedDriverId('');
+                        setSelectedAssistantIds([]);
+                        setSelectedCrewId('');
+                      }}
                       className="text-slate-400 hover:text-red-500 transition-colors"
                     >
                       Limpiar selección
@@ -389,8 +546,12 @@ export const AssignmentPage: React.FC = () => {
                 </div>
               </div>
               
-              <button type="submit" disabled={!routeId || !vehicleId || employeeIds.length === 0} className="w-full bg-emerald-500 text-white rounded-lg py-3 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                Confirmar Asignación
+              <button
+                type="submit"
+                disabled={assignSaving || !routeId || !vehicleId || !selectedDriverId}
+                className="w-full bg-emerald-500 text-white rounded-lg py-3 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {assignSaving ? 'Guardando Asignación...' : 'Confirmar Asignación'}
               </button>
             </form>
           </div>
@@ -423,7 +584,7 @@ export const AssignmentPage: React.FC = () => {
               </div>
             ) : (
               <div className="bg-white border border-slate-200 rounded-2xl h-full flex flex-col items-center justify-center text-center p-8 shadow-sm">
-                <Map className="h-12 w-12 text-slate-300 mb-4" />
+                <MapIcon className="h-12 w-12 text-slate-300 mb-4" />
                 <h3 className="text-lg font-medium text-slate-600">Sin Asignación Reciente</h3>
                 <p className="text-slate-400 text-sm mt-2 max-w-sm">
                   Complete el formulario para crear una nueva asignación. El código QR de acceso rápido se generará aquí.
@@ -439,6 +600,11 @@ export const AssignmentPage: React.FC = () => {
               <Users className="h-5 w-5 mr-2 text-emerald-500" />
               Nueva Tripulación
             </h2>
+            {crewError && (
+              <div className="mb-4 text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2.5">
+                {crewError}
+              </div>
+            )}
             <form onSubmit={handleSaveCrew} className="space-y-5">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Nombre de Tripulación (Alias)</label>
@@ -446,40 +612,57 @@ export const AssignmentPage: React.FC = () => {
               </div>
               
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Conductor Principal</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Conductor Principal (Obligatorio — 1)</label>
                 <select required value={crewDriverId} onChange={e => setCrewDriverId(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
                   <option value="">Seleccione un conductor...</option>
-                  {activeGroupEmployees.filter(e => (e.role || '').toLowerCase().includes('conductor')).map(emp => (
+                  {groupDrivers.map(emp => (
                     <option key={emp.id} value={emp.id}>{emp.name}</option>
                   ))}
                 </select>
               </div>
               
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Ayudantes / Coordinadores</label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-slate-700">Auxiliares / Ayudantes (Máx. {MAX_AUXILIARIES_PER_ROUTE})</label>
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
+                    crewAssistantIds.length >= MAX_AUXILIARIES_PER_ROUTE
+                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                      : 'bg-slate-100 text-slate-700 border-slate-200'
+                  }`}>
+                    {crewAssistantIds.length} / {MAX_AUXILIARIES_PER_ROUTE}
+                  </span>
+                </div>
                 <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
-                  {activeGroupEmployees.filter(e => !(e.role || '').toLowerCase().includes('conductor')).map(emp => (
-                    <label key={emp.id} className="flex items-center px-4 py-3 hover:bg-slate-50 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={crewAssistantIds.includes(emp.id)}
-                        onChange={() => toggleCrewAssistant(emp.id)}
-                        className="h-4 w-4 text-emerald-500 focus:ring-emerald-500 border-gray-300 rounded"
-                      />
-                      <div className="ml-3 flex flex-col">
-                        <span className="text-sm font-medium text-slate-800">{emp.name}</span>
-                        <span className="text-xs text-slate-500">{emp.role}</span>
-                      </div>
-                    </label>
-                  ))}
-                  {activeGroupEmployees.filter(e => !(e.role || '').toLowerCase().includes('conductor')).length === 0 && (
+                  {groupAuxiliaries.map(emp => {
+                    const isChecked = crewAssistantIds.includes(emp.id);
+                    const limitReached = !isChecked && crewAssistantIds.length >= MAX_AUXILIARIES_PER_ROUTE;
+                    return (
+                      <label
+                        key={emp.id}
+                        className={`flex items-center px-4 py-3 ${limitReached ? 'bg-slate-100/70 opacity-60 cursor-not-allowed' : 'hover:bg-slate-50 cursor-pointer'}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          disabled={limitReached}
+                          onChange={() => toggleCrewAssistant(emp.id)}
+                          className="h-4 w-4 text-emerald-500 focus:ring-emerald-500 border-gray-300 rounded disabled:opacity-50"
+                        />
+                        <div className="ml-3 flex flex-col">
+                          <span className="text-sm font-medium text-slate-800">{emp.name}</span>
+                          <span className="text-xs text-slate-500">{emp.role}</span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                  {groupAuxiliaries.length === 0 && (
                     <div className="p-4 text-sm text-slate-500 text-center">No hay personal de apoyo registrado.</div>
                   )}
                 </div>
               </div>
 
-              <button type="submit" disabled={!crewName || !crewDriverId} className="w-full bg-emerald-500 text-white rounded-lg py-3 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                Guardar Tripulación
+              <button type="submit" disabled={crewSaving || !crewName.trim() || !crewDriverId} className="w-full bg-emerald-500 text-white rounded-lg py-3 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {crewSaving ? 'Guardando...' : 'Guardar Tripulación'}
               </button>
             </form>
           </div>
@@ -506,7 +689,7 @@ export const AssignmentPage: React.FC = () => {
                       </div>
                       {assistants.length > 0 && (
                         <div className="flex items-start">
-                          <div className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded mr-2 mt-0.5 uppercase">Apoyo</div>
+                          <div className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded mr-2 mt-0.5 uppercase">Auxiliares ({assistants.length})</div>
                           <span className="text-sm text-slate-600">{assistants.map(a => a?.name).join(', ')}</span>
                         </div>
                       )}
@@ -535,3 +718,4 @@ export const AssignmentPage: React.FC = () => {
     </div>
   );
 };
+

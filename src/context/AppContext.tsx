@@ -26,7 +26,13 @@ import {
   syncDeleteAllEmployeesApi,
   syncDeleteDocApi,
   syncUpdateDocApi,
+  updateShiftTimesApi,
 } from '../lib/api';
+import {
+  findLinkedDriverShiftForAssignment,
+  validateAssignmentSelection,
+  validateCrewSelection,
+} from '../utils/assignmentRules';
 
 interface AppContextProps {
   state: AppState;
@@ -713,8 +719,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addCrew = async (crew: Omit<CrewTemplate, 'id'>) => {
+    const check = validateCrewSelection({
+      driverId: crew.driverId,
+      assistantIds: crew.assistantIds || [],
+      employees: rawState.employees,
+    });
+    if (!check.ok) {
+      throw new Error(check.error || 'Configuración de tripulación inválida.');
+    }
+
     try {
-      const payload = { ...crew, workGroupId: resolveScopedWorkGroupId(crew.workGroupId) };
+      const payload = {
+        ...crew,
+        assistantIds: check.normalizedAssistantIds || [],
+        workGroupId: resolveScopedWorkGroupId(crew.workGroupId),
+      };
       if (useBackendSync) {
         await syncCreateDocApi('crews', payload);
         await refreshFromBackend();
@@ -724,12 +743,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await setDoc(docRef, payload);
     } catch (e) {
       console.error(e);
+      throw e;
     }
   };
 
   const updateCrew = async (id: string, crew: Partial<CrewTemplate>) => {
+    const existing = rawState.crews.find(c => c.id === id);
+    const nextDriverId = crew.driverId ?? existing?.driverId ?? '';
+    const nextAssistants = crew.assistantIds ?? existing?.assistantIds ?? [];
+    const check = validateCrewSelection({
+      driverId: nextDriverId,
+      assistantIds: nextAssistants,
+      employees: rawState.employees,
+    });
+    if (!check.ok) {
+      throw new Error(check.error || 'Configuración de tripulación inválida.');
+    }
+
     try {
-      const safeCrew = lockedWorkGroupId ? { ...crew, workGroupId: lockedWorkGroupId } : crew;
+      const safeCrew = lockedWorkGroupId
+        ? { ...crew, assistantIds: check.normalizedAssistantIds, workGroupId: lockedWorkGroupId }
+        : { ...crew, assistantIds: check.normalizedAssistantIds };
       if (useBackendSync) {
         await syncUpdateDocApi('crews', id, safeCrew);
         await refreshFromBackend();
@@ -738,6 +772,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await updateDoc(doc(db, 'crews', id), safeCrew);
     } catch (e) {
       console.error(e);
+      throw e;
     }
   };
 
@@ -755,6 +790,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addAssignment = async (assignment: Omit<Assignment, 'id' | 'status' | 'incidents'>) => {
+    const check = validateAssignmentSelection({
+      routeId: assignment.routeId,
+      vehicleId: assignment.vehicleId,
+      employeeIds: assignment.employeeIds || [],
+      routes: rawState.routes,
+      vehicles: rawState.vehicles,
+      employees: rawState.employees,
+      requireOperationalVehicle: true,
+    });
+    if (!check.ok || !check.normalizedEmployeeIds) {
+      throw new Error(check.error || 'Datos de asignación inválidos.');
+    }
+
+    const scopedGroupId = resolveScopedWorkGroupId(assignment.workGroupId);
+    if (check.route?.workGroupId && scopedGroupId && check.route.workGroupId !== scopedGroupId) {
+      throw new Error('La ruta seleccionada no pertenece al grupo de trabajo activo.');
+    }
+    if (check.vehicle?.workGroupId && scopedGroupId && check.vehicle.workGroupId !== scopedGroupId) {
+      throw new Error('El vehículo seleccionado no pertenece al grupo de trabajo activo.');
+    }
+
     try {
       const nowIso = new Date().toISOString();
       const createdAt = assignment.date || nowIso;
@@ -776,11 +832,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const payload = {
         routeId: assignment.routeId,
         vehicleId: assignment.vehicleId,
-        employeeIds: assignment.employeeIds,
+        employeeIds: check.normalizedEmployeeIds,
         date: assignment.date,
         status: 'Pendiente',
         incidents: [metaIncident],
-        workGroupId: resolveScopedWorkGroupId(assignment.workGroupId),
+        workGroupId: scopedGroupId,
         weightTons: assignment.weightTons || 0,
       };
 
@@ -839,10 +895,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (useBackendSync) {
         await syncUpdateDocApi('assignments', id, updateData);
         await refreshFromBackend();
-        return;
+      } else {
+        await updateDoc(doc(db, 'assignments', id), updateData);
       }
 
-      await updateDoc(doc(db, 'assignments', id), updateData);
+      // Sync milestone timestamps/weight to linked primary DriverShift if supervisor/admin/gestion
+      if (user && ['admin', 'gestion', 'supervisor'].includes(user.role)) {
+        const linkedShift = findLinkedDriverShiftForAssignment(
+          assignment,
+          rawState.driverShifts,
+          rawState.vehicles,
+          rawState.employees
+        );
+        if (linkedShift) {
+          try {
+            const t1 = meta.salidaBaseAt || linkedShift.t1StartShiftAt;
+            const t2 = meta.inicioRutaAt ?? linkedShift.t2StartRouteAt ?? null;
+            const t3 = meta.finRutaAt ?? linkedShift.t3EndRouteAt ?? null;
+            const t4 = meta.llegadaBaseAt ?? linkedShift.t4ArriveBaseAt ?? null;
+            await updateShiftTimesApi(linkedShift.id, {
+              t1StartShiftAt: t1,
+              t2StartRouteAt: t2,
+              t3EndRouteAt: t3,
+              t4ArriveBaseAt: t4,
+              ...(weightTons !== undefined ? { weightTons } : {}),
+            });
+            if (useBackendSync) await refreshFromBackend();
+          } catch (syncErr) {
+            console.warn('No se pudo sincronizar cambio de estado con jornada de conductor:', syncErr);
+          }
+        }
+      }
     } catch (e) {
       console.error(e);
     }
@@ -852,21 +935,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     id: string,
     updates: { vehicleId?: string; employeeIds?: string[]; statusTimestamps?: Record<string, string> }
   ) => {
+    const assignment = state.assignments.find(a => a.id === id);
+    if (!assignment) return;
+
+    const targetVehicleId = updates.vehicleId ?? assignment.vehicleId;
+    const targetEmployeeIds = updates.employeeIds ?? assignment.employeeIds;
+    const vehicleChanged = updates.vehicleId !== undefined && updates.vehicleId !== assignment.vehicleId;
+
+    const check = validateAssignmentSelection({
+      routeId: assignment.routeId,
+      vehicleId: targetVehicleId,
+      employeeIds: targetEmployeeIds,
+      routes: rawState.routes,
+      vehicles: rawState.vehicles,
+      employees: rawState.employees,
+      requireOperationalVehicle: vehicleChanged,
+    });
+    if (!check.ok || !check.normalizedEmployeeIds) {
+      throw new Error(check.error || 'Los recursos asignados no cumplen con las reglas (1 Conductor y máximo 3 Auxiliares).');
+    }
+
     try {
-      const assignment = state.assignments.find(a => a.id === id);
-      if (!assignment) return;
       const updateData: any = {};
       if (updates.vehicleId !== undefined) updateData.vehicleId = updates.vehicleId;
-      if (updates.employeeIds !== undefined) updateData.employeeIds = updates.employeeIds;
-      if (updates.statusTimestamps) {
-        const meta: any = {
-          salidaBaseAt: assignment.salidaBaseAt,
-          inicioRutaAt: assignment.inicioRutaAt,
-          finRutaAt: assignment.finRutaAt,
-          llegadaBaseAt: assignment.llegadaBaseAt,
-          createdAt: assignment.createdAt,
-        };
+      if (updates.employeeIds !== undefined) updateData.employeeIds = check.normalizedEmployeeIds;
 
+      const meta: any = {
+        salidaBaseAt: assignment.salidaBaseAt,
+        inicioRutaAt: assignment.inicioRutaAt,
+        finRutaAt: assignment.finRutaAt,
+        llegadaBaseAt: assignment.llegadaBaseAt,
+        createdAt: assignment.createdAt,
+      };
+
+      if (updates.statusTimestamps) {
         const newHistory = (assignment.statusHistory || []).map(h => ({
           ...h,
           timestamp: updates.statusTimestamps![h.status] || h.timestamp,
@@ -899,12 +1001,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (useBackendSync) {
         await syncUpdateDocApi('assignments', id, updateData);
         await refreshFromBackend();
-        return;
+      } else {
+        await updateDoc(doc(db, 'assignments', id), updateData);
       }
 
-      await updateDoc(doc(db, 'assignments', id), updateData);
+      if (updates.statusTimestamps && user && ['admin', 'gestion', 'supervisor'].includes(user.role)) {
+        const linkedShift = findLinkedDriverShiftForAssignment(
+          assignment,
+          rawState.driverShifts,
+          rawState.vehicles,
+          rawState.employees
+        );
+        if (linkedShift) {
+          try {
+            await updateShiftTimesApi(linkedShift.id, {
+              t1StartShiftAt: meta.salidaBaseAt || linkedShift.t1StartShiftAt,
+              t2StartRouteAt: meta.inicioRutaAt ?? linkedShift.t2StartRouteAt ?? null,
+              t3EndRouteAt: meta.finRutaAt ?? linkedShift.t3EndRouteAt ?? null,
+              t4ArriveBaseAt: meta.llegadaBaseAt ?? linkedShift.t4ArriveBaseAt ?? null,
+            });
+            if (useBackendSync) await refreshFromBackend();
+          } catch (syncErr) {
+            console.warn('No se pudo sincronizar tiempos con jornada de conductor:', syncErr);
+          }
+        }
+      }
     } catch (e) {
       console.error(e);
+      throw e;
     }
   };
 

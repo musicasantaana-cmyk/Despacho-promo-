@@ -45,6 +45,7 @@ import {
   computeShiftTimeBreakdown,
   formatMsAsHoursMins,
 } from '../utils/shiftTimeMetrics';
+import { isConductorRole, resolveAssignmentDriver } from '../utils/assignmentRules';
 
 function formatElapsed(ms: number): string {
   const safe = Math.max(0, Math.floor(ms / 1000));
@@ -76,7 +77,6 @@ export const DriverPage: React.FC = () => {
   // Initial setup form state
   const [selectedGroupId, setSelectedGroupId] = useState<string>(lockedWorkGroupId || state.activeWorkGroupId || '');
   const [selectedDriverId, setSelectedDriverId] = useState<string>(user?.employeeId || '');
-  const [vehicleNumber, setVehicleNumber] = useState<string>('');
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>('');
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [showAllRolesInGroup, setShowAllRolesInGroup] = useState(false);
@@ -106,7 +106,6 @@ export const DriverPage: React.FC = () => {
   const [showSupportWarningModal, setShowSupportWarningModal] = useState(false);
   const [showSupportRouteModal, setShowSupportRouteModal] = useState(false);
   const [supportRouteId, setSupportRouteId] = useState('');
-  const [supportManualCode, setSupportManualCode] = useState('');
   const [supportIncludeOtherGroups, setSupportIncludeOtherGroups] = useState(false);
   const [pendingParentShift, setPendingParentShift] = useState<DriverShift | null>(null);
 
@@ -252,7 +251,7 @@ export const DriverPage: React.FC = () => {
     });
 
     if (showAllRolesInGroup) return inGroup;
-    const driversOnly = inGroup.filter(e => (e.role || '').toLowerCase().includes('conductor'));
+    const driversOnly = inGroup.filter(e => isConductorRole(e.role));
     return driversOnly.length > 0 ? driversOnly : inGroup;
   }, [state.employees, state.workGroups, selectedGroupId, showAllRolesInGroup]);
 
@@ -266,9 +265,14 @@ export const DriverPage: React.FC = () => {
     return state.routes.filter(r => r.workGroupId === selectedGroupId);
   }, [state.routes, selectedGroupId]);
 
+  const selectedVehicle = useMemo(
+    () => groupVehicles.find(v => v.id === selectedVehicleId) || null,
+    [groupVehicles, selectedVehicleId]
+  );
+
   const selectedRoute = useMemo(
-    () => state.routes.find(r => r.id === selectedRouteId) || null,
-    [state.routes, selectedRouteId]
+    () => groupRoutes.find(r => r.id === selectedRouteId) || null,
+    [groupRoutes, selectedRouteId]
   );
 
   const effectiveRoute = useMemo(() => {
@@ -357,21 +361,38 @@ export const DriverPage: React.FC = () => {
 
   const todayStr = new Date().toLocaleDateString('en-CA');
 
-  // Auto-match today's assignment route when vehicle or driver is selected in Step 1
-  useEffect(() => {
-    if (activeShift || !selectedGroupId) return;
+  // Auto-match today's assignment (route + vehicle / driver) when selecting in Step 1
+  const syncSelectionFromTodayAssignment = (nextDriverId: string, nextVehicleId: string) => {
+    if (!selectedGroupId) return;
     const match = state.assignments.find(a => {
       if (a.date.slice(0, 10) !== todayStr) return false;
       if (a.workGroupId && a.workGroupId !== selectedGroupId) return false;
       if (a.status === 'Cancelado') return false;
-      if (selectedVehicleId && a.vehicleId === selectedVehicleId) return true;
-      if (selectedDriverId && (a.employeeIds || []).includes(selectedDriverId)) return true;
+      if (nextVehicleId && a.vehicleId === nextVehicleId) return true;
+      if (nextDriverId && (a.employeeIds || []).includes(nextDriverId)) return true;
       return false;
     });
-    if (match && match.routeId) {
+    if (!match) return;
+    if (match.routeId && groupRoutes.some(r => r.id === match.routeId)) {
       setSelectedRouteId(match.routeId);
     }
-  }, [activeShift, selectedGroupId, selectedVehicleId, selectedDriverId, state.assignments, todayStr]);
+    if (!nextVehicleId && match.vehicleId && groupVehicles.some(v => v.id === match.vehicleId)) {
+      setSelectedVehicleId(match.vehicleId);
+    }
+    if (!nextDriverId) {
+      const assignedDriver = resolveAssignmentDriver(match, state.employees);
+      if (assignedDriver) {
+        setSelectedDriverId(assignedDriver.id);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (activeShift || !selectedGroupId) return;
+    if (!selectedDriverId && !selectedVehicleId) return;
+    if (selectedRouteId && selectedVehicleId && selectedDriverId) return;
+    syncSelectionFromTodayAssignment(selectedDriverId, selectedVehicleId);
+  }, [activeShift, selectedGroupId, selectedDriverId, selectedVehicleId, state.assignments, todayStr]);
 
   const todayCompletedShifts = useMemo(() => {
     return state.driverShifts.filter(s => s.date === todayStr && s.status === 'EN_BASE');
@@ -452,12 +473,16 @@ export const DriverPage: React.FC = () => {
         setErrorMsg('Seleccione su Nombre de Conductor.');
         return;
       }
-      const cleanVehicleNumber = vehicleNumber.trim();
-      if (!cleanVehicleNumber) {
-        setErrorMsg('Ingrese o seleccione el Número de Móvil / Vehículo.');
+      if (!selectedVehicle) {
+        setErrorMsg('Seleccione un Vehículo / Móvil operativo existente del catálogo.');
         return;
       }
-      const routeText = selectedRoute ? ` · Ruta ${selectedRoute.code}` : '';
+      if (!selectedRoute) {
+        setErrorMsg('Seleccione una Ruta existente del catálogo.');
+        return;
+      }
+      const cleanVehicleNumber = selectedVehicle.internalNumber;
+      const routeText = ` · Ruta ${selectedRoute.code}`;
       const phrase = `¿Desea confirmar el Inicio de Turno para el móvil ${cleanVehicleNumber}? Presione el botón verde para confirmar o el botón rojo para cancelar.`;
       setPendingConfirm({
         type,
@@ -500,7 +525,11 @@ export const DriverPage: React.FC = () => {
 
     if (type === 'start-support') {
       const chosenRoute = state.routes.find(r => r.id === supportRouteId) || null;
-      const chosenLabel = chosenRoute ? `${chosenRoute.code} - ${chosenRoute.name}` : supportManualCode.trim();
+      if (!chosenRoute) {
+        setErrorMsg('Debe seleccionar una ruta de apoyo existente del catálogo.');
+        return;
+      }
+      const chosenLabel = `${chosenRoute.code} - ${chosenRoute.name}`;
       const phrase = `¿Desea confirmar el inicio de la ruta de apoyo ${chosenLabel} con el móvil ${movil}? Su ruta actual quedará en pausa. Presione el botón verde para confirmar o el botón rojo para cancelar.`;
       setPendingConfirm({
         type,
@@ -569,9 +598,8 @@ export const DriverPage: React.FC = () => {
 
   // ── Action Execution Handlers ───────────────────────────────────────────────
   const handleStartShift = async () => {
-    if (!selectedGroupId || !selectedDriver) return;
-    const cleanVehicleNumber = vehicleNumber.trim();
-    if (!cleanVehicleNumber) return;
+    if (!selectedGroupId || !selectedDriver || !selectedVehicle || !selectedRoute) return;
+    const cleanVehicleNumber = selectedVehicle.internalNumber;
 
     setBusyAction('start');
     try {
@@ -581,10 +609,10 @@ export const DriverPage: React.FC = () => {
         driverId: selectedDriver.id,
         driverName: selectedDriver.name,
         vehicleNumber: cleanVehicleNumber,
-        vehicleId: selectedVehicleId || '',
-        routeId: selectedRoute?.id || '',
-        routeCode: selectedRoute?.code || '',
-        routeName: selectedRoute?.name || '',
+        vehicleId: selectedVehicle.id,
+        routeId: selectedRoute.id,
+        routeCode: selectedRoute.code,
+        routeName: selectedRoute.name,
       });
       setCompletedShiftSummary(null);
       setActiveShift(shift);
@@ -717,7 +745,6 @@ export const DriverPage: React.FC = () => {
         weightTons !== undefined ? { weightTons, requireWeight: true } : undefined
       );
       setActiveShift(null);
-      setVehicleNumber('');
       setSelectedVehicleId('');
       setSelectedRouteId('');
       setBreakdownNote('');
@@ -760,27 +787,25 @@ export const DriverPage: React.FC = () => {
     stopSpeech();
     setShowSupportWarningModal(false);
     setSupportRouteId('');
-    setSupportManualCode('');
     setSupportIncludeOtherGroups(false);
     setShowSupportRouteModal(true);
-    speakConfirmationPrompt('Seleccione la nueva ruta de apoyo para iniciar.');
+    speakConfirmationPrompt('Seleccione la nueva ruta de apoyo del catálogo para iniciar.');
   };
 
   const handleStartSupportShift = async () => {
     if (!activeShift) return;
     const chosenRoute = state.routes.find(r => r.id === supportRouteId) || null;
-    const manual = supportManualCode.trim();
-    if (!chosenRoute && !manual) {
-      setErrorMsg('Debe seleccionar o escribir una ruta de apoyo.');
+    if (!chosenRoute) {
+      setErrorMsg('Debe seleccionar una ruta de apoyo existente del catálogo.');
       return;
     }
     setBusyAction('support-start');
     setErrorMsg('');
     try {
       const { supportShift } = await startSupportShiftApi(activeShift.id, {
-        routeId: chosenRoute?.id || '',
-        routeCode: chosenRoute?.code || manual,
-        routeName: chosenRoute?.name || `Apoyo ${manual}`,
+        routeId: chosenRoute.id,
+        routeCode: chosenRoute.code,
+        routeName: chosenRoute.name,
       });
       setShowSupportRouteModal(false);
       setCompletedShiftSummary(null);
@@ -1047,7 +1072,7 @@ export const DriverPage: React.FC = () => {
           <div>
             <h3 className="text-lg font-bold text-slate-900">1. Configuración Inicial del Turno</h3>
             <p className="text-sm text-slate-500 mt-0.5">
-              Confirme su grupo operativo, nombre y número de móvil antes de iniciar el turno.
+              Seleccione su grupo operativo, conductor, vehículo y ruta existente antes de iniciar el turno.
             </p>
           </div>
 
@@ -1095,7 +1120,11 @@ export const DriverPage: React.FC = () => {
               </div>
               <select
                 value={selectedDriverId}
-                onChange={e => setSelectedDriverId(e.target.value)}
+                onChange={e => {
+                  const nextId = e.target.value;
+                  setSelectedDriverId(nextId);
+                  syncSelectionFromTodayAssignment(nextId, selectedVehicleId);
+                }}
                 disabled={!selectedGroupId}
                 className="w-full h-12 border border-slate-300 rounded-xl px-3.5 text-base font-semibold text-slate-800 bg-white focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
               >
@@ -1108,45 +1137,58 @@ export const DriverPage: React.FC = () => {
               </select>
             </div>
 
-            {/* 3. Número de Móvil / Vehículo */}
+            {/* 3. Número de Móvil / Vehículo (Solo existentes del catálogo) */}
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                 <Truck className="h-4 w-4 text-emerald-600" />
-                Número de Móvil / Vehículo
+                Número de Móvil / Vehículo *
               </label>
-              <input
-                type="text"
-                value={vehicleNumber}
+              <select
+                required
+                value={selectedVehicleId}
                 onChange={e => {
-                  const val = e.target.value;
-                  setVehicleNumber(val);
-                  const matched = groupVehicles.find(v => v.internalNumber.toLowerCase() === val.trim().toLowerCase());
-                  setSelectedVehicleId(matched ? matched.id : '');
+                  const nextVehId = e.target.value;
+                  setSelectedVehicleId(nextVehId);
+                  syncSelectionFromTodayAssignment(selectedDriverId, nextVehId);
                 }}
-                placeholder="Ej. 104"
-                className="w-full h-12 border border-slate-300 rounded-xl px-3.5 text-base font-bold text-slate-900 bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
-              />
+                disabled={!selectedGroupId}
+                className="w-full h-12 border border-slate-300 rounded-xl px-3.5 text-base font-bold text-slate-900 bg-white focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
+              >
+                <option value="">Seleccione un móvil operativo...</option>
+                {groupVehicles.map(v => (
+                  <option key={v.id} value={v.id}>
+                    Móvil {v.internalNumber} · {v.plate}
+                  </option>
+                ))}
+              </select>
+              {selectedGroupId && groupVehicles.length === 0 && (
+                <p className="text-xs text-amber-600 mt-1">No hay vehículos operativos registrados en este grupo.</p>
+              )}
             </div>
 
-            {/* 4. Ruta (Opcional / Auto-asignada) */}
+            {/* 4. Ruta Asignada (Solo existentes del catálogo) */}
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                 <MapPin className="h-4 w-4 text-emerald-600" />
-                Ruta Asignada (Opcional)
+                Ruta Asignada *
               </label>
               <select
+                required
                 value={selectedRouteId}
                 onChange={e => setSelectedRouteId(e.target.value)}
                 disabled={!selectedGroupId}
                 className="w-full h-12 border border-slate-300 rounded-xl px-3.5 text-base font-semibold text-slate-800 bg-white focus:ring-2 focus:ring-emerald-500 outline-none disabled:bg-slate-100"
               >
-                <option value="">Sin ruta preseleccionada...</option>
+                <option value="">Seleccione una ruta existente...</option>
                 {groupRoutes.map(r => (
                   <option key={r.id} value={r.id}>
                     [{r.code}] {r.name}
                   </option>
                 ))}
               </select>
+              {selectedGroupId && groupRoutes.length === 0 && (
+                <p className="text-xs text-amber-600 mt-1">No hay rutas registradas en este grupo.</p>
+              )}
             </div>
           </div>
 
@@ -1155,7 +1197,7 @@ export const DriverPage: React.FC = () => {
             <button
               type="button"
               onClick={() => openActionConfirmation('start-shift')}
-              disabled={busyAction === 'start' || !selectedGroupId || !selectedDriverId || !vehicleNumber.trim()}
+              disabled={busyAction === 'start' || !selectedGroupId || !selectedDriverId || !selectedVehicle || !selectedRoute}
               className="w-full min-h-[60px] bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white rounded-2xl text-lg font-bold flex items-center justify-center gap-3 shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               <Play className="h-6 w-6" />
@@ -1972,19 +2014,6 @@ export const DriverPage: React.FC = () => {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  O código de ruta manual (si no figura en lista)
-                </label>
-                <input
-                  type="text"
-                  value={supportManualCode}
-                  onChange={e => setSupportManualCode(e.target.value)}
-                  placeholder="Ej. APOYO-R3-05"
-                  className="w-full h-11 border border-slate-300 rounded-xl px-3 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-orange-500 outline-none"
-                />
-              </div>
-
               <div className="grid grid-cols-2 gap-3 pt-1">
                 <button
                   type="button"
@@ -1998,7 +2027,7 @@ export const DriverPage: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  disabled={(!supportRouteId && !supportManualCode.trim()) || busyAction === 'support-start'}
+                  disabled={!supportRouteId || busyAction === 'support-start'}
                   onClick={() => openActionConfirmation('start-support')}
                   className="min-h-[52px] bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-2xl font-bold text-base transition-colors flex items-center justify-center gap-2"
                 >

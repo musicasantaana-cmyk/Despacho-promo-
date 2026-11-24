@@ -20,6 +20,21 @@ import {
   query,
   where,
 } from 'firebase/firestore';
+import type {
+  Assignment as AppAssignment,
+  DriverShift as AppDriverShift,
+  Employee as AppEmployee,
+  Incident as AppIncident,
+  RouteDef as AppRouteDef,
+  Vehicle as AppVehicle,
+} from './src/types.ts';
+import {
+  buildMergedStatusHistoryFromShift,
+  findMatchingAssignmentForShift,
+  mapDriverShiftToAssignmentStatus,
+  validateAssignmentSelection,
+  validateCrewSelection,
+} from './src/utils/assignmentRules.ts';
 
 type UserRole = 'admin' | 'gestion' | 'supervisor' | 'conductor';
 type DriverShiftStatus = 'EN_TURNO' | 'EN_RUTA' | 'FIN_RUTA' | 'EN_BASE';
@@ -552,6 +567,75 @@ function setSessionCookie(res: Response, token: string): void {
   });
 }
 
+async function syncMatchingAssignmentFromShift(shift: DriverShiftDoc & { id: string }): Promise<boolean> {
+  if (!shift || shift.isSupportShift) return false;
+  try {
+    const [assignSnap, vehiclesSnap] = await Promise.all([
+      getDocs(query(collection(db, 'assignments'), where('workGroupId', '==', shift.workGroupId))),
+      getDocs(query(collection(db, 'vehicles'), where('workGroupId', '==', shift.workGroupId))),
+    ]);
+
+    const vehicles: AppVehicle[] = vehiclesSnap.docs.map(d => ({ ...(d.data() as Omit<AppVehicle, 'id'>), id: d.id }));
+    const assignments: AppAssignment[] = assignSnap.docs.map(d => {
+      const data = d.data() as Record<string, any>;
+      let finalData: AppAssignment = { ...(data as Omit<AppAssignment, 'id'>), id: d.id };
+      const metaInc = Array.isArray(finalData.incidents)
+        ? finalData.incidents.find(i => i && i.id === 'SYS_META')
+        : null;
+      if (metaInc) {
+        try {
+          const parsedMeta = JSON.parse(metaInc.description);
+          finalData = {
+            ...finalData,
+            ...parsedMeta,
+            incidents: (finalData.incidents || []).filter(i => i && i.id !== 'SYS_META'),
+          };
+        } catch {
+          // ignore malformed meta
+        }
+      }
+      return finalData;
+    });
+
+    const match = findMatchingAssignmentForShift(shift as AppDriverShift, assignments, vehicles);
+    if (!match) return false;
+
+    const nextStatus = mapDriverShiftToAssignmentStatus(shift as AppDriverShift);
+    const mergedHistory = buildMergedStatusHistoryFromShift(match.statusHistory || [], shift as AppDriverShift);
+    const meta = {
+      createdAt: match.createdAt || match.date,
+      salidaBaseAt: shift.t1StartShiftAt || match.salidaBaseAt,
+      inicioRutaAt: shift.t2StartRouteAt ?? match.inicioRutaAt,
+      finRutaAt: shift.t3EndRouteAt ?? match.finRutaAt,
+      llegadaBaseAt: shift.t4ArriveBaseAt ?? match.llegadaBaseAt,
+      statusHistory: mergedHistory,
+    };
+    const metaIncident: AppIncident = {
+      id: 'SYS_META',
+      timestamp: new Date().toISOString(),
+      type: 'Otro',
+      description: JSON.stringify(meta),
+      startTime: '',
+      endTime: '',
+    };
+
+    const baseIncidents = (match.incidents || []).filter(i => i && i.id !== 'SYS_META').slice(0, 49);
+    const updatePayload: Record<string, unknown> = {
+      status: nextStatus,
+      incidents: [...baseIncidents, metaIncident],
+    };
+    if (typeof shift.weightTons === 'number' && Number.isFinite(shift.weightTons)) {
+      updatePayload.weightTons = shift.weightTons;
+    }
+
+    await updateDoc(doc(db, 'assignments', match.id), updatePayload);
+    return true;
+  } catch (err) {
+    console.warn('syncMatchingAssignmentFromShift warning:', err);
+    return false;
+  }
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -908,6 +992,56 @@ async function startServer() {
           }
         }
 
+        if (colName === 'assignments') {
+          const targetGroupId = String(rawPayload.workGroupId || '').trim();
+          const [routesSnap, vehiclesSnap, employeesSnap] = await Promise.all([
+            getDocs(collection(db, 'routes')),
+            getDocs(collection(db, 'vehicles')),
+            getDocs(collection(db, 'employees')),
+          ]);
+          const routes = routesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppRouteDef, 'id'>), id: d.id }))
+            .filter(r => !targetGroupId || !r.workGroupId || r.workGroupId === targetGroupId);
+          const vehicles = vehiclesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppVehicle, 'id'>), id: d.id }))
+            .filter(v => !targetGroupId || !v.workGroupId || v.workGroupId === targetGroupId);
+          const employees = employeesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppEmployee, 'id'>), id: d.id }))
+            .filter(e => !targetGroupId || !e.workGroupId || e.workGroupId === targetGroupId);
+
+          const check = validateAssignmentSelection({
+            routeId: String(rawPayload.routeId || ''),
+            vehicleId: String(rawPayload.vehicleId || ''),
+            employeeIds: Array.isArray(rawPayload.employeeIds) ? rawPayload.employeeIds : [],
+            routes,
+            vehicles,
+            employees,
+            requireOperationalVehicle: true,
+          });
+          if (!check.ok) {
+            res.status(400).json({ error: check.error || 'Asignación inválida.' });
+            return;
+          }
+          rawPayload.employeeIds = check.normalizedEmployeeIds;
+        } else if (colName === 'crews') {
+          const targetGroupId = String(rawPayload.workGroupId || '').trim();
+          const employeesSnap = await getDocs(collection(db, 'employees'));
+          const employees = employeesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppEmployee, 'id'>), id: d.id }))
+            .filter(e => !targetGroupId || !e.workGroupId || e.workGroupId === targetGroupId);
+
+          const check = validateCrewSelection({
+            driverId: String(rawPayload.driverId || ''),
+            assistantIds: Array.isArray(rawPayload.assistantIds) ? rawPayload.assistantIds : [],
+            employees,
+          });
+          if (!check.ok) {
+            res.status(400).json({ error: check.error || 'Tripulación inválida.' });
+            return;
+          }
+          rawPayload.assistantIds = check.normalizedAssistantIds;
+        }
+
         const customId = typeof req.body?.id === 'string' && req.body.id.trim() ? req.body.id.trim() : '';
         const targetRef = customId ? doc(db, colName, customId) : doc(collection(db, colName));
         await setDoc(targetRef, rawPayload);
@@ -959,6 +1093,72 @@ async function startServer() {
 
         if (colName !== 'workGroups' && user.role === 'supervisor' && user.workGroupId) {
           rawUpdates.workGroupId = user.workGroupId;
+        }
+
+        if (colName === 'assignments' && (rawUpdates.routeId !== undefined || rawUpdates.vehicleId !== undefined || rawUpdates.employeeIds !== undefined)) {
+          const targetGroupId = String(rawUpdates.workGroupId || existing.workGroupId || '').trim();
+          const [routesSnap, vehiclesSnap, employeesSnap] = await Promise.all([
+            getDocs(collection(db, 'routes')),
+            getDocs(collection(db, 'vehicles')),
+            getDocs(collection(db, 'employees')),
+          ]);
+          const routes = routesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppRouteDef, 'id'>), id: d.id }))
+            .filter(r => !targetGroupId || !r.workGroupId || r.workGroupId === targetGroupId);
+          const vehicles = vehiclesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppVehicle, 'id'>), id: d.id }))
+            .filter(v => !targetGroupId || !v.workGroupId || v.workGroupId === targetGroupId);
+          const employees = employeesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppEmployee, 'id'>), id: d.id }))
+            .filter(e => !targetGroupId || !e.workGroupId || e.workGroupId === targetGroupId);
+
+          const nextVehicleId = String(rawUpdates.vehicleId !== undefined ? rawUpdates.vehicleId : existing.vehicleId || '');
+          const nextRouteId = String(rawUpdates.routeId !== undefined ? rawUpdates.routeId : existing.routeId || '');
+          const nextEmployeeIds = Array.isArray(rawUpdates.employeeIds)
+            ? rawUpdates.employeeIds
+            : Array.isArray(existing.employeeIds)
+              ? existing.employeeIds
+              : [];
+
+          const check = validateAssignmentSelection({
+            routeId: nextRouteId,
+            vehicleId: nextVehicleId,
+            employeeIds: nextEmployeeIds,
+            routes,
+            vehicles,
+            employees,
+            requireOperationalVehicle: rawUpdates.vehicleId !== undefined && nextVehicleId !== existing.vehicleId,
+          });
+          if (!check.ok) {
+            res.status(400).json({ error: check.error || 'Actualización de asignación inválida.' });
+            return;
+          }
+          if (rawUpdates.employeeIds !== undefined) {
+            rawUpdates.employeeIds = check.normalizedEmployeeIds;
+          }
+        } else if (colName === 'crews' && (rawUpdates.driverId !== undefined || rawUpdates.assistantIds !== undefined)) {
+          const targetGroupId = String(rawUpdates.workGroupId || existing.workGroupId || '').trim();
+          const employeesSnap = await getDocs(collection(db, 'employees'));
+          const employees = employeesSnap.docs
+            .map(d => ({ ...(d.data() as Omit<AppEmployee, 'id'>), id: d.id }))
+            .filter(e => !targetGroupId || !e.workGroupId || e.workGroupId === targetGroupId);
+
+          const check = validateCrewSelection({
+            driverId: String(rawUpdates.driverId !== undefined ? rawUpdates.driverId : existing.driverId || ''),
+            assistantIds: Array.isArray(rawUpdates.assistantIds)
+              ? rawUpdates.assistantIds
+              : Array.isArray(existing.assistantIds)
+                ? existing.assistantIds
+                : [],
+            employees,
+          });
+          if (!check.ok) {
+            res.status(400).json({ error: check.error || 'Actualización de tripulación inválida.' });
+            return;
+          }
+          if (rawUpdates.assistantIds !== undefined) {
+            rawUpdates.assistantIds = check.normalizedAssistantIds;
+          }
         }
 
         await updateDoc(targetRef, rawUpdates);
@@ -1338,14 +1538,11 @@ async function startServer() {
       const workGroupName = String(req.body?.workGroupName || '').trim().slice(0, 100);
       const driverId = String(req.body?.driverId || '').trim();
       const driverName = String(req.body?.driverName || '').trim().slice(0, 120);
-      const vehicleNumber = String(req.body?.vehicleNumber || '').trim().slice(0, 50);
       const vehicleId = String(req.body?.vehicleId || '').trim().slice(0, 128);
       const routeId = String(req.body?.routeId || '').trim().slice(0, 128);
-      const routeCode = String(req.body?.routeCode || '').trim().slice(0, 50);
-      const routeName = String(req.body?.routeName || '').trim().slice(0, 100);
 
-      if (!workGroupId || !driverId || !driverName || !vehicleNumber) {
-        res.status(400).json({ error: 'Grupo operativo, nombre del conductor y número de móvil son obligatorios.' });
+      if (!workGroupId || !driverId || !driverName || !vehicleId || !routeId) {
+        res.status(400).json({ error: 'Grupo operativo, conductor, vehículo existente y ruta existente son obligatorios.' });
         return;
       }
 
@@ -1353,6 +1550,38 @@ async function startServer() {
         res.status(403).json({ error: 'Acceso denegado: no puede iniciar turno en otro grupo operativo.' });
         return;
       }
+
+      const [vehSnap, routeSnap] = await Promise.all([
+        getDoc(doc(db, 'vehicles', vehicleId)),
+        getDoc(doc(db, 'routes', routeId)),
+      ]);
+      if (!vehSnap.exists()) {
+        res.status(400).json({ error: 'El vehículo seleccionado no existe en el catálogo.' });
+        return;
+      }
+      const vehData = vehSnap.data() as Omit<AppVehicle, 'id'>;
+      if (vehData.status !== 'Operativo') {
+        res.status(409).json({ error: `El vehículo Móvil ${vehData.internalNumber} figura como Inoperativo.` });
+        return;
+      }
+      if (vehData.workGroupId && vehData.workGroupId !== workGroupId) {
+        res.status(403).json({ error: 'El vehículo seleccionado no pertenece al grupo operativo.' });
+        return;
+      }
+
+      if (!routeSnap.exists()) {
+        res.status(400).json({ error: 'La ruta seleccionada no existe en el catálogo.' });
+        return;
+      }
+      const routeData = routeSnap.data() as Omit<AppRouteDef, 'id'>;
+      if (routeData.workGroupId && routeData.workGroupId !== workGroupId) {
+        res.status(403).json({ error: 'La ruta seleccionada no pertenece al grupo operativo.' });
+        return;
+      }
+
+      const vehicleNumber = String(vehData.internalNumber || vehData.plate || '').trim().slice(0, 50);
+      const routeCode = String(routeData.code || '').trim().slice(0, 50);
+      const routeName = String(routeData.name || '').trim().slice(0, 100);
 
       const now = new Date().toISOString();
       const todayDate = new Date().toLocaleDateString('en-CA');
@@ -1410,8 +1639,10 @@ async function startServer() {
       };
 
       await setDoc(doc(db, 'driver_shifts', docId), shiftDoc);
+      const createdShift = { ...shiftDoc, id: docId };
+      await syncMatchingAssignmentFromShift(createdShift);
       emitSyncUpdate('driver_shifts.start');
-      res.status(201).json({ shift: { ...shiftDoc, id: docId } });
+      res.status(201).json({ shift: createdShift });
     } catch (err) {
       console.error('POST /api/driver-shifts/start error:', err);
       res.status(500).json({ error: 'Error al registrar inicio de turno.' });
@@ -1520,8 +1751,10 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      const nextShift = { ...shift, ...updates, id: snap.id };
+      await syncMatchingAssignmentFromShift(nextShift);
       emitSyncUpdate('driver_shifts.startRoute');
-      res.json({ shift: { ...shift, ...updates, id: snap.id } });
+      res.json({ shift: nextShift });
     } catch (err) {
       console.error('start-route error:', err);
       res.status(500).json({ error: 'Error al registrar inicio de ruta.' });
@@ -1581,8 +1814,10 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      const nextShift = { ...shift, ...updates, id: snap.id };
+      await syncMatchingAssignmentFromShift(nextShift);
       emitSyncUpdate('driver_shifts.endRoute');
-      res.json({ shift: { ...shift, ...updates, id: snap.id } });
+      res.json({ shift: nextShift });
     } catch (err) {
       console.error('end-route error:', err);
       res.status(500).json({ error: 'Error al registrar fin de ruta.' });
@@ -1702,9 +1937,11 @@ async function startServer() {
         }
       }
 
+      const nextShift = { ...shift, ...updates, id: snap.id };
+      await syncMatchingAssignmentFromShift(nextShift);
       emitSyncUpdate('driver_shifts.arriveBase');
       res.json({
-        shift: { ...shift, ...updates, id: snap.id },
+        shift: nextShift,
         parentShift: updatedParentShift,
       });
     } catch (err) {
@@ -1750,12 +1987,18 @@ async function startServer() {
       }
 
       const routeId = String(req.body?.routeId || '').trim().slice(0, 128);
-      const routeCode = String(req.body?.routeCode || '').trim().slice(0, 50);
-      const routeName = String(req.body?.routeName || '').trim().slice(0, 100);
-      if (!routeCode && !routeName && !routeId) {
-        res.status(400).json({ error: 'Debe seleccionar o indicar la nueva ruta de apoyo.' });
+      if (!routeId) {
+        res.status(400).json({ error: 'Debe seleccionar una ruta de apoyo existente del catálogo.' });
         return;
       }
+      const routeSnap = await getDoc(doc(db, 'routes', routeId));
+      if (!routeSnap.exists()) {
+        res.status(400).json({ error: 'La ruta de apoyo seleccionada no existe en el catálogo.' });
+        return;
+      }
+      const routeData = routeSnap.data() as Omit<AppRouteDef, 'id'>;
+      const routeCode = String(routeData.code || '').trim().slice(0, 50);
+      const routeName = String(routeData.name || '').trim().slice(0, 100);
 
       const now = new Date().toISOString();
       const supportShiftId = generateDocId('shift');
@@ -1945,8 +2188,10 @@ async function startServer() {
         updates.weightTons = weightParsed.value;
       }
       await updateDoc(shiftRef, updates);
+      const nextShift = { ...shift, ...updates, id: snap.id };
+      await syncMatchingAssignmentFromShift(nextShift);
       emitSyncUpdate('driver_shifts.finalizePending');
-      res.json({ shift: { ...shift, ...updates, id: snap.id } });
+      res.json({ shift: nextShift });
     } catch (err) {
       console.error('finalize-pending error:', err);
       res.status(500).json({ error: 'Error al finalizar la jornada pendiente.' });
@@ -1997,8 +2242,10 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      const nextShift = { ...shift, ...updates, id: snap.id };
+      await syncMatchingAssignmentFromShift(nextShift);
       emitSyncUpdate('driver_shifts.refillStart');
-      res.json({ shift: { ...shift, ...updates, id: snap.id } });
+      res.json({ shift: nextShift });
     } catch (err) {
       console.error('refill/start error:', err);
       res.status(500).json({ error: 'Error al iniciar tiempo de relleno.' });
@@ -2051,8 +2298,10 @@ async function startServer() {
         updatedAt: now,
       };
       await updateDoc(shiftRef, updates);
+      const nextShift = { ...shift, ...updates, id: snap.id };
+      await syncMatchingAssignmentFromShift(nextShift);
       emitSyncUpdate('driver_shifts.refillEnd');
-      res.json({ shift: { ...shift, ...updates, id: snap.id } });
+      res.json({ shift: nextShift });
     } catch (err) {
       console.error('refill/end error:', err);
       res.status(500).json({ error: 'Error al finalizar descargue.' });
@@ -2518,8 +2767,10 @@ async function startServer() {
         };
 
         await updateDoc(shiftRef, updates);
+        const nextShift = { ...shift, ...updates, id: snap.id };
+        await syncMatchingAssignmentFromShift(nextShift);
         emitSyncUpdate('driver_shifts.updateTimes');
-        res.json({ shift: { ...shift, ...updates, id: snap.id } });
+        res.json({ shift: nextShift });
       } catch (err) {
         console.error('PATCH /api/driver-shifts/:id/times error:', err);
         res.status(500).json({ error: 'Error al modificar los tiempos de la jornada.' });

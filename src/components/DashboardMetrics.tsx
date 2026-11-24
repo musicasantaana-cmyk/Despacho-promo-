@@ -31,6 +31,10 @@ import {
 import { useAppContext } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { Assignment, DriverShift, Vehicle } from '../types';
+import {
+  findLinkedDriverShiftForAssignment,
+  mapDriverShiftToAssignmentStatus,
+} from '../utils/assignmentRules';
 
 type TimeRangeFilter = 'today' | '7d' | '30d' | 'all';
 type ChartViewMode = 'both' | 'pie' | 'bar';
@@ -262,27 +266,27 @@ export const DashboardMetrics: React.FC = () => {
 
     // Track matched shift IDs so we don't double-count an Assignment and its linked DriverShift
     const matchedShiftIds = new Set<string>();
-    const vehicleById = new Map<string, Vehicle>(state.vehicles.map(v => [v.id, v]));
 
     for (const a of filteredAssignments) {
-      const aDate = (a.date || '').slice(0, 10);
-      const vehicle = vehicleById.get(a.vehicleId);
-      const linkedShift = filteredShifts.find(s => {
-        if (matchedShiftIds.has(s.id)) return false;
-        if (s.date !== aDate) return false;
-        if (a.workGroupId && s.workGroupId !== a.workGroupId) return false;
-        if (s.vehicleId && s.vehicleId === a.vehicleId) return true;
-        if (vehicle?.internalNumber && s.vehicleNumber.toLowerCase() === vehicle.internalNumber.toLowerCase()) {
-          return true;
-        }
-        if (s.driverId && (a.employeeIds || []).includes(s.driverId)) return true;
-        return false;
-      });
+      const availableShifts = filteredShifts.filter(s => !matchedShiftIds.has(s.id));
+      const linkedShift = findLinkedDriverShiftForAssignment(
+        a,
+        availableShifts,
+        state.vehicles,
+        state.employees
+      );
       if (linkedShift) matchedShiftIds.add(linkedShift.id);
 
-      if (a.status === 'Cancelado') {
+      const effectiveStatus =
+        a.status === 'Cancelado'
+          ? 'Cancelado'
+          : linkedShift
+            ? mapDriverShiftToAssignmentStatus(linkedShift)
+            : a.status;
+
+      if (effectiveStatus === 'Cancelado') {
         cancelled += 1;
-      } else if (a.status === 'Fin de Ruta' || a.status === 'Base') {
+      } else if (effectiveStatus === 'Fin de Ruta' || effectiveStatus === 'Base') {
         completed += 1;
       } else {
         // Pendiente, Salida de Base, Inicio de Ruta, Relleno
@@ -340,7 +344,7 @@ export const DashboardMetrics: React.FC = () => {
       chartData,
       nonZeroPieData,
     };
-  }, [assignments, driverShifts, state.vehicles, timeRange]);
+  }, [assignments, driverShifts, state.vehicles, state.employees, timeRange]);
 
   const activeGroupName = useMemo(() => {
     if (!effectiveWorkGroupId) return 'Todos los grupos';
