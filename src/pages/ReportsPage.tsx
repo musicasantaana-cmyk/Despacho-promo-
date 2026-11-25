@@ -685,6 +685,30 @@ export const ReportsPage: React.FC = () => {
     }, 0);
   }, [state.driverShifts]);
 
+  const activePersonnelTodayCount = useMemo(() => {
+    const todayKey = new Date().toLocaleDateString('en-CA');
+    const activeEmpIds = new Set<string>();
+    state.assignments
+      .filter(a => a.status !== 'Cancelado' && (a.date || '').slice(0, 10) === todayKey)
+      .map(a => getEffectiveAssignmentWithShift(a, state.driverShifts, state.vehicles, state.employees))
+      .forEach(({ assignment: eff, linkedShift }) => {
+        const confirmed =
+          Boolean(linkedShift) ||
+          ['Salida de Base', 'Inicio de Ruta', 'Fin de Ruta', 'Relleno', 'Base'].includes(
+            eff.status
+          );
+        if (confirmed) {
+          (eff.employeeIds || []).forEach(id => activeEmpIds.add(id));
+        }
+      });
+    state.driverShifts
+      .filter(s => s.date === todayKey)
+      .forEach(s => {
+        if (s.driverId) activeEmpIds.add(s.driverId);
+      });
+    return state.employees.filter(e => activeEmpIds.has(e.id)).length;
+  }, [state.assignments, state.driverShifts, state.vehicles, state.employees]);
+
   const tabs: { id: ReportSubTab; label: string; icon: React.ReactNode; badge?: string; alertBadge?: boolean }[] = [
     {
       id: 'board',
@@ -703,7 +727,7 @@ export const ReportsPage: React.FC = () => {
       id: 'attendance',
       label: 'Reporte de Personal',
       icon: <Users className="h-4 w-4" />,
-      badge: `${state.employees.length} activos`
+      badge: `${activePersonnelTodayCount}/${state.employees.length} activos`
     },
     {
       id: 'general',
@@ -1432,14 +1456,15 @@ export const ReportsPage: React.FC = () => {
                     {metrics.relevantEmployees.filter(e => metrics.relevantAssignments.some(a => (a.employeeIds || []).includes(e.id))).map(emp => {
                       const assignment = metrics.relevantAssignments.find(a => (a.employeeIds || []).includes(emp.id));
                       const route = assignment ? state.routes.find(r => r.id === assignment.routeId) : null;
+                      const isActiveOp = assignment && ['Salida de Base', 'Inicio de Ruta', 'Fin de Ruta', 'Relleno', 'Base'].includes(assignment.status);
                       return (
-                        <div key={emp.id} className="p-3 border border-indigo-200 bg-indigo-50/40 rounded-xl flex justify-between items-center">
+                        <div key={emp.id} className={`p-3 border rounded-xl flex justify-between items-center ${isActiveOp ? 'border-emerald-200 bg-emerald-50/40' : 'border-indigo-200 bg-indigo-50/40'}`}>
                           <div>
                             <h4 className="font-bold text-slate-800 text-sm">{emp.name}</h4>
                             <p className="text-xs text-slate-500">{emp.role} • Ruta: <strong>{route?.name || 'N/A'}</strong></p>
                           </div>
-                          <span className="text-[10px] font-bold px-2.5 py-1 bg-indigo-600 text-white rounded-full uppercase">
-                            ASIGNADO
+                          <span className={`text-[10px] font-bold px-2.5 py-1 text-white rounded-full uppercase ${isActiveOp ? 'bg-emerald-600' : 'bg-indigo-600'}`}>
+                            {isActiveOp ? 'EN OPERACIÓN / ACTIVO' : 'ASIGNADO'}
                           </span>
                         </div>
                       );
@@ -1452,15 +1477,20 @@ export const ReportsPage: React.FC = () => {
                   <div className="space-y-3">
                     {metrics.relevantEmployees.map(emp => {
                       const assignment = metrics.relevantAssignments.find(a => (a.employeeIds || []).includes(emp.id));
+                      const isActiveOp = assignment && ['Salida de Base', 'Inicio de Ruta', 'Fin de Ruta', 'Relleno', 'Base'].includes(assignment.status);
                       return (
-                        <div key={emp.id} className={`p-3.5 border rounded-xl flex justify-between items-center ${assignment ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50 border-slate-200'}`}>
+                        <div key={emp.id} className={`p-3.5 border rounded-xl flex justify-between items-center ${isActiveOp ? 'bg-emerald-50/40 border-emerald-200' : assignment ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50 border-slate-200'}`}>
                           <div>
                             <h4 className="font-bold text-slate-800 text-sm">{emp.name}</h4>
                             <p className="text-xs text-slate-500">{emp.role} • Tel: {emp.phone || 'Sin teléfono'}</p>
                           </div>
-                          {assignment ? (
+                          {isActiveOp ? (
+                            <span className="text-[10px] font-bold px-2.5 py-1 bg-emerald-600 text-white rounded-full uppercase">
+                              EN OPERACIÓN / ACTIVO
+                            </span>
+                          ) : assignment ? (
                             <span className="text-[10px] font-bold px-2.5 py-1 bg-indigo-600 text-white rounded-full uppercase">
-                              EN RUTA
+                              ASIGNADO
                             </span>
                           ) : (
                             <span className="text-[10px] font-bold px-2.5 py-1 bg-slate-200 text-slate-600 rounded-full uppercase">

@@ -201,8 +201,10 @@ export const OperationsBoardView: React.FC = () => {
   const [auditShowAllDates, setAuditShowAllDates] = useState(false);
   const [selectedCard, setSelectedCard] = useState<BoardCardItem | null>(null);
   const [alarmMuted, setAlarmMuted] = useState(false);
+  const [dismissedAlarmIds, setDismissedAlarmIds] = useState<string[]>([]);
   const [ackNotes, setAckNotes] = useState('');
   const [ackBusy, setAckBusy] = useState(false);
+  const [closeBreakdownBusy, setCloseBreakdownBusy] = useState(false);
   const [ackError, setAckError] = useState('');
   const [resolveReporterName, setResolveReporterName] = useState('');
   const [resolveNotes, setResolveNotes] = useState('');
@@ -558,6 +560,7 @@ export const OperationsBoardView: React.FC = () => {
 
   // Unacknowledged Mechanical Breakdown Alarms across visible shifts
   const pendingAlarms = useMemo<PendingAlarmItem[]>(() => {
+    const dismissedSet = new Set(dismissedAlarmIds);
     const queue: PendingAlarmItem[] = [];
     state.driverShifts.forEach(shift => {
       if (lockedWorkGroupId && shift.workGroupId !== lockedWorkGroupId) return;
@@ -565,7 +568,7 @@ export const OperationsBoardView: React.FC = () => {
       const groupName = shift.workGroupName || group?.name || 'Grupo';
       const routeInfo = resolveRouteForShift(shift);
       (shift.breakdownEvents || []).forEach(ev => {
-        if (!ev.acknowledgedAt) {
+        if (!ev.acknowledgedAt && !dismissedSet.has(ev.id)) {
           queue.push({
             shift,
             breakdown: ev,
@@ -577,7 +580,15 @@ export const OperationsBoardView: React.FC = () => {
     });
     queue.sort((a, b) => new Date(a.breakdown.startAt).getTime() - new Date(b.breakdown.startAt).getTime());
     return queue;
-  }, [state.driverShifts, state.workGroups, state.routes, state.assignments, state.vehicles, lockedWorkGroupId]);
+  }, [
+    state.driverShifts,
+    state.workGroups,
+    state.routes,
+    state.assignments,
+    state.vehicles,
+    lockedWorkGroupId,
+    dismissedAlarmIds,
+  ]);
 
   const activeAlarm = pendingAlarms[0] || null;
 
@@ -597,18 +608,64 @@ export const OperationsBoardView: React.FC = () => {
     }
   }, [activeAlarm, alarmMuted]);
 
+  const dismissAlarmId = (alarmId: string) => {
+    setDismissedAlarmIds(prev => (prev.includes(alarmId) ? prev : [...prev, alarmId]));
+  };
+
+  const handleDismissAlarmOnly = () => {
+    if (!activeAlarm || ackBusy || closeBreakdownBusy) return;
+    dismissAlarmId(activeAlarm.breakdown.id);
+    setAckNotes('');
+    setAckError('');
+  };
+
   const handleAcknowledgeAlarm = async () => {
-    if (!activeAlarm || ackBusy) return;
+    if (!activeAlarm || ackBusy || closeBreakdownBusy) return;
+    const targetShiftId = activeAlarm.shift.id;
+    const targetBreakdownId = activeAlarm.breakdown.id;
     setAckBusy(true);
     setAckError('');
     try {
-      await acknowledgeBreakdownApi(activeAlarm.shift.id, activeAlarm.breakdown.id, ackNotes.trim());
+      await acknowledgeBreakdownApi(targetShiftId, targetBreakdownId, ackNotes.trim());
+      dismissAlarmId(targetBreakdownId);
       setAckNotes('');
       await syncNow();
     } catch (err: any) {
       setAckError(err?.message || 'No se pudo aceptar la novedad. Intente de nuevo.');
     } finally {
       setAckBusy(false);
+    }
+  };
+
+  const handleAcceptAndCloseBreakdown = async () => {
+    if (!activeAlarm || ackBusy || closeBreakdownBusy) return;
+    const targetShiftId = activeAlarm.shift.id;
+    const targetBreakdownId = activeAlarm.breakdown.id;
+    const notesText = ackNotes.trim();
+    setCloseBreakdownBusy(true);
+    setAckError('');
+    try {
+      await acknowledgeBreakdownApi(targetShiftId, targetBreakdownId, notesText);
+      if (!activeAlarm.breakdown.endAt) {
+        await endBreakdownApi(targetShiftId, {
+          breakdownId: targetBreakdownId,
+          resolvedReportedBy:
+            activeAlarm.breakdown.reportedByName ||
+            activeAlarm.shift.driverName ||
+            user?.fullName ||
+            user?.username ||
+            'Tablero Central',
+          resolutionNotes: notesText || 'Novedad aceptada y cerrada desde Tablero en Vivo',
+          requireReporter: false,
+        });
+      }
+      dismissAlarmId(targetBreakdownId);
+      setAckNotes('');
+      await syncNow();
+    } catch (err: any) {
+      setAckError(err?.message || 'No se pudo cerrar la novedad. Intente de nuevo.');
+    } finally {
+      setCloseBreakdownBusy(false);
     }
   };
 
@@ -2693,7 +2750,7 @@ export const OperationsBoardView: React.FC = () => {
         </div>
       )}
 
-      {/* Blocking Un-dismissible Mechanical Breakdown Alarm Pop-up */}
+      {/* Mechanical Breakdown Alarm Pop-up */}
       {activeAlarm && (
         <div
           className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
@@ -2711,15 +2768,26 @@ export const OperationsBoardView: React.FC = () => {
                     Alerta de Falla Mecánica
                   </h3>
                   <p className="text-xs text-rose-100 font-semibold mt-0.5">
-                    Debe aceptar la novedad para continuar monitoreando el tablero.
+                    Acepte y cierre la novedad o finalice el reporte de avería.
                   </p>
                 </div>
               </div>
-              {pendingAlarms.length > 1 && (
-                <span className="px-2.5 py-1 rounded-lg bg-slate-950/40 text-white text-xs font-mono font-bold shrink-0">
-                  1 de {pendingAlarms.length}
-                </span>
-              )}
+              <div className="flex items-center gap-2 shrink-0">
+                {pendingAlarms.length > 1 && (
+                  <span className="px-2.5 py-1 rounded-lg bg-slate-950/40 text-white text-xs font-mono font-bold">
+                    1 de {pendingAlarms.length}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={handleDismissAlarmOnly}
+                  disabled={ackBusy || closeBreakdownBusy}
+                  title="Cerrar aviso"
+                  className="p-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white transition-colors disabled:opacity-50"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
             <div className="p-5 sm:p-6 space-y-4">
@@ -2776,15 +2844,38 @@ export const OperationsBoardView: React.FC = () => {
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={handleAcknowledgeAlarm}
-                disabled={ackBusy}
-                className="w-full min-h-[54px] bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white rounded-2xl font-bold text-base shadow-md flex items-center justify-center gap-2 disabled:opacity-50 transition-all"
-              >
-                <CheckCircle2 className="h-5 w-5" />
-                {ackBusy ? 'Registrando en Auditoría...' : 'Aceptar Novedad'}
-              </button>
+              <div className="space-y-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={handleAcknowledgeAlarm}
+                  disabled={ackBusy || closeBreakdownBusy}
+                  className="w-full min-h-[52px] bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white rounded-2xl font-bold text-base shadow-md flex items-center justify-center gap-2 disabled:opacity-50 transition-all"
+                >
+                  <CheckCircle2 className="h-5 w-5" />
+                  {ackBusy ? 'Aceptando y cerrando aviso...' : 'Aceptar y Cerrar Novedad'}
+                </button>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAcceptAndCloseBreakdown}
+                    disabled={ackBusy || closeBreakdownBusy}
+                    className="min-h-[44px] px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-50 transition-all"
+                  >
+                    <Wrench className="h-4 w-4 text-emerald-400" />
+                    {closeBreakdownBusy ? 'Finalizando avería...' : 'Aceptar y Finalizar Avería'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDismissAlarmOnly}
+                    disabled={ackBusy || closeBreakdownBusy}
+                    className="min-h-[44px] px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50 transition-all"
+                  >
+                    <X className="h-4 w-4" />
+                    Solo Cerrar Aviso
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

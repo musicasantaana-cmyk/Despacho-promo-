@@ -827,7 +827,7 @@ export async function addManualShiftEventApi(
 let cachedHealthResult: boolean | null = null;
 
 export async function checkBackendHealthApi(force = false): Promise<boolean> {
-  if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
+  if (shouldUseDirectFirebaseClient()) {
     cachedHealthResult = false;
     return false;
   }

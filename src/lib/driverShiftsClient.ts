@@ -13,7 +13,17 @@ import {
   Vehicle,
 } from '../types';
 import { auth, db, isFirebaseConfigured } from './firebase';
-import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocFromServer,
+  getDocs,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
 import {
   buildMergedStatusHistoryFromShift,
   findMatchingAssignmentForShift,
@@ -1162,7 +1172,7 @@ export async function endBreakdownClient(
   ensureFirestoreReady();
   const user = await resolveActiveClientUser();
   const shiftRef = doc(db, 'driver_shifts', shiftId);
-  const snap = await getDoc(shiftRef);
+  const snap = await getDocFromServer(shiftRef).catch(() => getDoc(shiftRef));
   if (!snap.exists()) throw new Error('Jornada no encontrada.');
   const shift = snap.data() as DriverShift;
   if (!canAccessGroup(user, shift.workGroupId)) {
@@ -1240,17 +1250,21 @@ export async function endBreakdownClient(
 
   const auditId = `audit_${targetEvent.id}`;
   const auditRef = doc(db, 'breakdown_audit_logs', auditId);
-  const auditSnap = await getDoc(auditRef);
-  if (auditSnap.exists()) {
-    await updateDoc(auditRef, {
-      resolvedAt: now,
-      resolvedByUserId: user.id,
-      resolvedByUsername: user.username,
-      resolvedReportedBy: finalReporter,
-      resolutionNotes: resolutionNotes || '',
-      durationMins: closedDurationMins,
-      updatedAt: now,
-    });
+  try {
+    const auditSnap = await getDoc(auditRef);
+    if (auditSnap.exists()) {
+      await updateDoc(auditRef, {
+        resolvedAt: now,
+        resolvedByUserId: user.id,
+        resolvedByUsername: user.username,
+        resolvedReportedBy: finalReporter,
+        resolutionNotes: resolutionNotes || '',
+        durationMins: closedDurationMins,
+        updatedAt: now,
+      });
+    }
+  } catch (auditErr) {
+    console.warn('[endBreakdownClient] No se pudo actualizar breakdown_audit_logs:', auditErr);
   }
 
   return { shift: { ...shift, ...updates, id: snap.id } as DriverShift };
@@ -1267,7 +1281,7 @@ export async function acknowledgeBreakdownClient(
 
   const cleanNotes = String(acknowledgementNotes || '').trim().slice(0, 300);
   const shiftRef = doc(db, 'driver_shifts', shiftId);
-  const snap = await getDoc(shiftRef);
+  const snap = await getDocFromServer(shiftRef).catch(() => getDoc(shiftRef));
   if (!snap.exists()) throw new Error('Jornada no encontrada.');
   const shift = snap.data() as DriverShift;
   if (!canAccessGroup(user, shift.workGroupId)) {
@@ -1298,52 +1312,56 @@ export async function acknowledgeBreakdownClient(
 
   const auditId = `audit_${breakdownId}`;
   const auditRef = doc(db, 'breakdown_audit_logs', auditId);
-  const auditSnap = await getDoc(auditRef);
-  let savedAudit: BreakdownAuditLog;
+  let savedAudit: BreakdownAuditLog = {
+    id: auditId,
+    shiftId: snap.id,
+    breakdownId,
+    date: shift.date || new Date().toLocaleDateString('en-CA'),
+    workGroupId: shift.workGroupId,
+    workGroupName: shift.workGroupName || '',
+    vehicleNumber: shift.vehicleNumber,
+    routeCode: shift.routeCode || '',
+    routeName: shift.routeName || '',
+    driverId: shift.driverId || '',
+    driverName: shift.driverName,
+    incidentType: 'Avería Mecánica',
+    notes: targetEvent.notes || '',
+    reportedAt: targetEvent.startAt,
+    reportedByUserId: shift.createdByUserId,
+    reportedByUsername: shift.createdByUsername,
+    status: 'ACEPTADA',
+    acknowledgedAt: now,
+    acknowledgedByUserId: user.id,
+    acknowledgedByUsername: user.username,
+    acknowledgedByFullName: user.fullName || user.username,
+    acknowledgedByRole: user.role,
+    acknowledgementNotes: cleanNotes,
+    createdAt: now,
+    updatedAt: now,
+  };
 
-  if (auditSnap.exists()) {
-    const existingAudit = auditSnap.data() as BreakdownAuditLog;
-    const auditUpdates = {
-      status: 'ACEPTADA' as const,
-      acknowledgedAt: existingAudit.acknowledgedAt || now,
-      acknowledgedByUserId: existingAudit.acknowledgedByUserId || user.id,
-      acknowledgedByUsername: existingAudit.acknowledgedByUsername || user.username,
-      acknowledgedByFullName: existingAudit.acknowledgedByFullName || user.fullName || user.username,
-      acknowledgedByRole: existingAudit.acknowledgedByRole || user.role,
-      acknowledgementNotes: cleanNotes || existingAudit.acknowledgementNotes || '',
-      updatedAt: now,
-    };
-    await updateDoc(auditRef, auditUpdates);
-    savedAudit = { ...existingAudit, ...auditUpdates, id: auditSnap.id };
-  } else {
-    const newAudit: Omit<BreakdownAuditLog, 'id'> = {
-      shiftId: snap.id,
-      breakdownId,
-      date: shift.date || new Date().toLocaleDateString('en-CA'),
-      workGroupId: shift.workGroupId,
-      workGroupName: shift.workGroupName || '',
-      vehicleNumber: shift.vehicleNumber,
-      routeCode: shift.routeCode || '',
-      routeName: shift.routeName || '',
-      driverId: shift.driverId || '',
-      driverName: shift.driverName,
-      incidentType: 'Avería Mecánica',
-      notes: targetEvent.notes || '',
-      reportedAt: targetEvent.startAt,
-      reportedByUserId: shift.createdByUserId,
-      reportedByUsername: shift.createdByUsername,
-      status: 'ACEPTADA',
-      acknowledgedAt: now,
-      acknowledgedByUserId: user.id,
-      acknowledgedByUsername: user.username,
-      acknowledgedByFullName: user.fullName || user.username,
-      acknowledgedByRole: user.role,
-      acknowledgementNotes: cleanNotes,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await setDoc(auditRef, newAudit);
-    savedAudit = { ...newAudit, id: auditId };
+  try {
+    const auditSnap = await getDoc(auditRef);
+    if (auditSnap.exists()) {
+      const existingAudit = auditSnap.data() as BreakdownAuditLog;
+      const auditUpdates = {
+        status: 'ACEPTADA' as const,
+        acknowledgedAt: existingAudit.acknowledgedAt || now,
+        acknowledgedByUserId: existingAudit.acknowledgedByUserId || user.id,
+        acknowledgedByUsername: existingAudit.acknowledgedByUsername || user.username,
+        acknowledgedByFullName: existingAudit.acknowledgedByFullName || user.fullName || user.username,
+        acknowledgedByRole: existingAudit.acknowledgedByRole || user.role,
+        acknowledgementNotes: cleanNotes || existingAudit.acknowledgementNotes || '',
+        updatedAt: now,
+      };
+      await updateDoc(auditRef, auditUpdates);
+      savedAudit = { ...existingAudit, ...auditUpdates, id: auditSnap.id };
+    } else {
+      const { id: _ignoredId, ...newAudit } = savedAudit;
+      await setDoc(auditRef, newAudit);
+    }
+  } catch (auditErr) {
+    console.warn('[acknowledgeBreakdownClient] No se pudo guardar breakdown_audit_logs:', auditErr);
   }
 
   return {
