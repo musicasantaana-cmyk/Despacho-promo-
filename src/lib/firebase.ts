@@ -1,79 +1,63 @@
 import { initializeApp, getApp, getApps, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer, type Firestore } from 'firebase/firestore';
-import firebaseAppletConfig from '../../firebase-applet-config.json';
 
-const databaseId =
-  import.meta.env.VITE_FIREBASE_DATABASE_ID ||
-  firebaseAppletConfig.firestoreDatabaseId ||
-  '';
+const rawDatabaseId = (import.meta.env.VITE_FIREBASE_DATABASE_ID || '').trim();
+const databaseId = rawDatabaseId && rawDatabaseId !== '(default)' ? rawDatabaseId : '';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseAppletConfig.apiKey,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseAppletConfig.authDomain,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseAppletConfig.projectId,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseAppletConfig.storageBucket,
-  messagingSenderId:
-    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseAppletConfig.messagingSenderId,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseAppletConfig.appId,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || firebaseAppletConfig.measurementId,
+  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY || '').trim(),
+  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim(),
+  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim(),
+  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '').trim(),
+  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim(),
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID || '').trim(),
+  measurementId: (import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || '').trim(),
 };
 
-const ENV_CHECKS: ReadonlyArray<readonly [string, string | undefined]> = [
+const REQUIRED_ENV_CHECKS: ReadonlyArray<readonly [string, string]> = [
   ['VITE_FIREBASE_API_KEY', firebaseConfig.apiKey],
   ['VITE_FIREBASE_AUTH_DOMAIN', firebaseConfig.authDomain],
   ['VITE_FIREBASE_PROJECT_ID', firebaseConfig.projectId],
-  ['VITE_FIREBASE_STORAGE_BUCKET', firebaseConfig.storageBucket],
-  ['VITE_FIREBASE_MESSAGING_SENDER_ID', firebaseConfig.messagingSenderId],
   ['VITE_FIREBASE_APP_ID', firebaseConfig.appId],
 ];
 
-const missingEnvVars = ENV_CHECKS
-  .filter(([, value]) => !value || String(value).trim() === '')
+const OPTIONAL_ENV_CHECKS: ReadonlyArray<readonly [string, string]> = [
+  ['VITE_FIREBASE_STORAGE_BUCKET', firebaseConfig.storageBucket],
+  ['VITE_FIREBASE_MESSAGING_SENDER_ID', firebaseConfig.messagingSenderId],
+];
+
+export const missingFirebaseEnvVars: string[] = [...REQUIRED_ENV_CHECKS, ...OPTIONAL_ENV_CHECKS]
+  .filter(([, value]) => !value)
   .map(([key]) => key);
 
-if (missingEnvVars.length > 0) {
+if (missingFirebaseEnvVars.length > 0) {
   console.warn(
-    `[Firebase] Faltan variables de configuración (${missingEnvVars.join(', ')}). Configúralas en .env o en Environment Variables de Vercel.`
+    `[Firebase] Faltan variables de configuración (${missingFirebaseEnvVars.join(', ')}). Configúralas en .env o en Environment Variables de Vercel.`
   );
 }
 
-const hasCoreConfig = Boolean(
-  firebaseConfig.apiKey &&
-    firebaseConfig.authDomain &&
-    firebaseConfig.projectId &&
-    firebaseConfig.appId
-);
+const hasCoreConfig = REQUIRED_ENV_CHECKS.every(([, value]) => Boolean(value));
 
 export const isFirebaseConfigured = hasCoreConfig;
+export const firebaseProjectId = firebaseConfig.projectId;
 export const firestoreDatabaseId = databaseId || '(default)';
 
-let app: FirebaseApp;
-let db: Firestore;
-let auth: Auth;
+let app: FirebaseApp = undefined as unknown as FirebaseApp;
+let db: Firestore = undefined as unknown as Firestore;
+let auth: Auth = undefined as unknown as Auth;
 
-try {
-  const safeInitConfig = hasCoreConfig
-    ? firebaseConfig
-    : {
-        ...firebaseConfig,
-        apiKey: firebaseConfig.apiKey || 'missing-api-key',
-        authDomain: firebaseConfig.authDomain || 'missing-auth-domain',
-        projectId: firebaseConfig.projectId || 'missing-project-id',
-        appId: firebaseConfig.appId || 'missing-app-id',
-      };
-
-  app = getApps().length > 0 ? getApp() : initializeApp(safeInitConfig);
-  db = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
-  auth = getAuth(app);
-} catch (error) {
-  console.warn(
-    '[Firebase] No se pudo inicializar Firebase SDK. Verifica las variables VITE_FIREBASE_* o firebase-applet-config.json.',
-    error
-  );
-  app = undefined as unknown as FirebaseApp;
-  db = undefined as unknown as Firestore;
-  auth = undefined as unknown as Auth;
+if (hasCoreConfig) {
+  try {
+    app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+    db = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
+    auth = getAuth(app);
+  } catch (error) {
+    console.error('[Firebase] Error al inicializar Firebase SDK con VITE_FIREBASE_*:', error);
+    app = undefined as unknown as FirebaseApp;
+    db = undefined as unknown as Firestore;
+    auth = undefined as unknown as Auth;
+  }
 }
 
 export { app, db, auth };

@@ -1,12 +1,21 @@
 import { AppUser, AuthSessionUser, BreakdownAuditLog, DriverShift, UserRole } from '../types';
-import { auth, db, isFirebaseConfigured } from './firebase';
+import {
+  auth,
+  db,
+  firebaseProjectId,
+  firestoreDatabaseId,
+  isFirebaseConfigured,
+  missingFirebaseEnvVars,
+} from './firebase';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
+  getDocsFromServer,
   query,
   setDoc,
   updateDoc,
@@ -62,11 +71,16 @@ function generateClientDocId(prefix: string): string {
 }
 
 function mapFirebaseClientError(err: any, fallbackMessage: string): Error {
-  const code = String(err?.code || '');
-  const msg = String(err?.message || '');
+  const code = String(err?.code || '').trim();
+  const msg = String(err?.message || '').trim();
   if (code === 'permission-denied' || msg.includes('Missing or insufficient permissions')) {
     return new Error(
-      'Permisos insuficientes en Firestore para consultar la colección app_users. Revisa tus reglas en firestore.rules.'
+      `Permisos insuficientes en Firestore (app_users): ${msg || code}`
+    );
+  }
+  if (code === 'unavailable' || msg.toLowerCase().includes('client is offline')) {
+    return new Error(
+      `No se pudo conectar con Firestore (${firebaseProjectId || 'sin proyecto'} / ${firestoreDatabaseId}): ${msg || code}`
     );
   }
   if (
@@ -86,7 +100,7 @@ function mapFirebaseClientError(err: any, fallbackMessage: string): Error {
   if (code === 'auth/operation-not-allowed') {
     return new Error('El inicio de sesión con Correo/Contraseña no está habilitado en Firebase Auth.');
   }
-  return new Error(msg || fallbackMessage);
+  return new Error(msg ? (code && !msg.includes(code) ? `${msg} (${code})` : msg) : fallbackMessage);
 }
 
 export function getAuthToken(): string | null {
@@ -148,17 +162,36 @@ async function loginWithFirebaseClient(
     throw new Error('Usuario y contraseña obligatorios.');
   }
   if (!isFirebaseConfigured || !db) {
+    const missingList =
+      missingFirebaseEnvVars.length > 0 ? ` (${missingFirebaseEnvVars.join(', ')})` : '';
     throw new Error(
-      'Firebase no está configurado. Configura las variables VITE_FIREBASE_* en tu entorno o en Vercel.'
+      `Firebase no está configurado${missingList}. Configura las variables VITE_FIREBASE_* en tu entorno o en Vercel.`
+    );
+  }
+
+  let allUsersSnap;
+  try {
+    allUsersSnap = await getDocsFromServer(collection(db, 'app_users'));
+  } catch (err: any) {
+    console.error('[loginWithFirebaseClient] Error en getDocsFromServer(app_users):', err);
+    const realMessage = String(err?.message || '').trim();
+    const realCode = String(err?.code || '').trim();
+    throw new Error(
+      realMessage
+        ? realCode && !realMessage.includes(realCode)
+          ? `${realMessage} (${realCode})`
+          : realMessage
+        : realCode || 'Error desconocido al consultar app_users en Firestore.'
     );
   }
 
   try {
-    const q = query(collection(db, 'app_users'), where('username', '==', cleanUsername));
-    const snap = await getDocs(q);
+    const normalizedInput = cleanUsername.toLowerCase();
+    const userDoc = allUsersSnap.docs.find(
+      d => String(d.data().username ?? '').trim().toLowerCase() === normalizedInput
+    );
 
-    if (!snap.empty) {
-      const userDoc = snap.docs[0];
+    if (userDoc) {
       const data = userDoc.data();
 
       if (data.active === false) {
@@ -184,7 +217,7 @@ async function loginWithFirebaseClient(
 
       const user: AuthSessionUser = {
         id: userDoc.id,
-        username: String(data.username || cleanUsername),
+        username: String(data.username || cleanUsername).trim(),
         fullName: String(data.fullName || data.username || cleanUsername),
         role: normalizeRole(data.role, 'gestion'),
         workGroupId: String(data.workGroupId || ''),
@@ -205,7 +238,7 @@ async function loginWithFirebaseClient(
       // Enrich role/workGroup from app_users if a matching profile doc exists by uid or email
       let matchedData: Record<string, any> | null = null;
       let matchedId = fbUser.uid;
-      const uidDoc = await getDoc(doc(db, 'app_users', fbUser.uid)).catch(() => null);
+      const uidDoc = await getDocFromServer(doc(db, 'app_users', fbUser.uid)).catch(() => null);
       if (uidDoc && uidDoc.exists()) {
         matchedData = uidDoc.data();
         matchedId = uidDoc.id;
@@ -233,10 +266,9 @@ async function loginWithFirebaseClient(
       };
     }
 
-    const allUsersSnap = await getDocs(collection(db, 'app_users'));
     if (allUsersSnap.empty) {
       throw new Error(
-        'No hay usuarios registrados en Firestore (colección app_users). Crea un usuario en app_users o inicia sesión con un correo de Firebase Auth.'
+        `No hay usuarios registrados en Firestore (proyecto: ${firebaseProjectId || 'no definido'}, base: ${firestoreDatabaseId}, colección: app_users).`
       );
     }
 
